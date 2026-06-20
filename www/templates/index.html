@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>最終大戰 WWW</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     SETUP SCREEN
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="setup-screen" class="show">
+  <div id="setup-inner">
+    <h1>⚔️ 最終大戰（WWW）</h1>
+    <p class="subtitle">賽前設定 — 填完後按「開始遊戲」</p>
+
+    <div class="setup-section">
+      <h2>基本設定</h2>
+      <div class="setup-row">
+        <label>回合數</label>
+        <input id="setup-rounds" type="number" min="1" max="5" value="3"
+               class="setup-input" style="width:60px">
+        <span style="color:var(--text-muted);font-size:11px">（最多 5 回合）</span>
+      </div>
+      <div class="setup-row" style="align-items:flex-start">
+        <label>參賽隊伍</label>
+        <div class="team-checkboxes" id="team-checkboxes"></div>
+      </div>
+    </div>
+
+    <div class="setup-section">
+      <h2>初始領地設定</h2>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+        格式：<code style="color:var(--accent)">隊伍號:兵力</code>，多隊用逗號分隔。例：<code style="color:var(--accent)">1:500,2:200</code>
+      </p>
+      <table id="territory-init-table">
+        <thead>
+          <tr>
+            <th style="width:130px">領地</th>
+            <th style="width:50px">難度</th>
+            <th>佔領者 + 兵力（格式：隊伍號:兵力，可多個）</th>
+          </tr>
+        </thead>
+        <tbody id="territory-init-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="setup-section">
+      <h2>初始兵力設定</h2>
+      <p style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+        各隊來自大地遊戲的初始兵力，將加入各隊的中立小島。
+      </p>
+      <div id="init-troops-rows" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;"></div>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+      <button class="btn btn-primary" id="btn-start-game" onclick="startGame()">
+        ▶ 開始遊戲
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     MAIN GAME SCREEN
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="app">
+  <!-- Header -->
+  <div id="header">
+    <h1>⚔️ 最終大戰</h1>
+    <div id="round-info">回合 1 / 3</div>
+    <button class="btn" id="btn-undo" onclick="undoRound()" disabled>↩ 上一回合</button>
+    <button class="btn" id="btn-redo" onclick="redoRound()" disabled>↪ 下一回合</button>
+    <div class="spacer"></div>
+    <button class="btn btn-mode" id="btn-mode" onclick="toggleMode()">🗺 真實模式</button>
+    <button class="btn btn-success" id="btn-execute" onclick="executeRound()">▶ 開始執行</button>
+    <button class="btn" onclick="openSetup()">⚙ 重新設定</button>
+  </div>
+
+  <!-- Phase banner -->
+  <div id="phase-banner"></div>
+
+  <!-- Main -->
+  <div id="main">
+    <!-- Left: Map -->
+    <div id="panel-left">
+      <div id="map-area">
+        <!-- Analysis mode view -->
+        <div id="analysis-view">
+          <div id="map-grid"></div>
+          <div id="special-zones"></div>
+        </div>
+        <!-- Real mode view -->
+        <div id="real-map">
+          <div id="anim-overlay">
+            <div class="anim-status">⚔ EXECUTING...</div>
+          </div>
+          <!-- Islands rendered by JS -->
+        </div>
+      </div>
+      <div id="scoreboard">
+        <h3>國力排行</h3>
+        <div id="score-list"></div>
+      </div>
+    </div>
+
+    <!-- Right: Command input -->
+    <div id="panel-right">
+      <div id="cmd-input-area">
+        <div class="team-selector-row">
+          <label>輸入隊伍：</label>
+          <select id="team-select" onchange="onTeamSelectChange()"></select>
+          <button class="btn btn-danger" style="font-size:11px;padding:4px 8px"
+                  onclick="clearTeamCommands()">清除</button>
+          <span id="cmd-count-hint" style="color:var(--text-muted);font-size:11px"></span>
+        </div>
+        <div id="cmd-templates">
+          <span class="tpl-label">模板：</span>
+          <button class="tpl-btn" onclick="insertTemplate('moving(S, E, n)')">moving</button>
+          <button class="tpl-btn" onclick="insertTemplate('attack(S, E, n)')">attack</button>
+          <button class="tpl-btn" onclick="insertTemplate('union(S, P, E, n)')">union</button>
+          <button class="tpl-btn" onclick="insertTemplate('union_attack(S, [P], E, n)')">union_attack</button>
+          <button class="tpl-btn tpl-admin" onclick="insertTemplate('set(zone, T:n)')">set</button>
+        </div>
+        <textarea id="cmd-textarea"
+                  placeholder="貼上指令（英文代號，可多行）&#10;&#10;例：&#10;moving(HK, ELF, 500)&#10;attack(ELF, DV, 300)&#10;union(HK, 2, ELF, 200)&#10;union_attack(HK, [2,3], DV, 400)"
+        ></textarea>
+        <div class="cmd-btn-row">
+          <button class="btn btn-primary" onclick="submitCommands()">發送</button>
+          <span style="color:var(--text-muted);font-size:10px;margin-left:4px">
+            按發送後指令才顯示在記錄中
+          </span>
+        </div>
+      </div>
+
+      <div id="cmd-log">
+        <h3>本回合指令記錄</h3>
+        <div id="cmd-entries">
+          <div class="empty-log">尚未輸入任何指令</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Execution log modal -->
+<div id="exec-overlay" onclick="closeExecModal(event)">
+  <div id="exec-modal">
+    <h2>⚔ 回合執行結果</h2>
+    <div id="exec-log-list"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn" onclick="closeExecModal()">關閉</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
