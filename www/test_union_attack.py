@@ -238,12 +238,13 @@ def test_overlapping_max_cliques_troops_decide():
 
 
 def test_single_attacker_no_partner_solo():
-    """Only one attacker, target owned by defender. Attacker goes solo."""
-    state = make_state(["1"], "2")
+    """Only one attacker (partner listed but never responds). Attacker goes solo."""
+    # Target owned by team 3 (not the ally), so validation passes; team 2 just never responds.
+    state = make_state(["1","2"], "3")
     allies = resolve(state, {
-        "1": f"union_attack({_ZONES[0]}, [2], {_ZONES[1]}, 200)",
+        "1": f"union_attack({_ZONES[0]}, [2], {_ZONES[2]}, 200)",
+        # team 2 does not submit → no mutual pair → 1 goes solo
     })
-    # team 2 is defender, not attacker → no pair → 1 is solo
     assert allies.get("1", []) == [], f"1 should be solo: {allies.get('1')}"
     print("PASS test_single_attacker_no_partner_solo")
 

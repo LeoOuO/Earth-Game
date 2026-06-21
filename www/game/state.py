@@ -111,12 +111,18 @@ ALL_TEAMS = [str(i) for i in range(1, 11)]  # ["1", "2", ..., "10"]
 class ZoneState:
     """Troops stationed at a zone, keyed by team number string."""
     troops: dict[str, int] = field(default_factory=dict)
+    # Set after a coalition garrison-betrayal win to force the occupier
+    # (occupation determined by attack forces only, not garrison n_Ac).
+    # Cleared when overwritten by the next battle.
+    forced_owner: Optional[str] = None
 
     def total(self) -> int:
         return sum(self.troops.values())
 
     def owner(self) -> Optional[str]:
-        """Single occupying team (most troops), or None if empty/tied."""
+        """Occupying team: forced_owner if set (persists at 0 troops per rule 1), otherwise team with most troops."""
+        if self.forced_owner:
+            return self.forced_owner
         if not self.troops:
             return None
         by_troops = sorted(self.troops.items(), key=lambda kv: kv[1], reverse=True)
@@ -127,7 +133,7 @@ class ZoneState:
         return None  # tied
 
     def copy(self) -> "ZoneState":
-        return ZoneState(troops=dict(self.troops))
+        return ZoneState(troops=dict(self.troops), forced_owner=self.forced_owner)
 
 
 @dataclass
@@ -136,6 +142,8 @@ class GameState:
     round: int = 1
     max_rounds: int = 3
     phase: str = "setup"  # "setup" | "input" | "executing" | "done"
+    # sub_round > 0 means this is an admin-only intermediate version (e.g. 3.1, 3.2)
+    sub_round: int = 0
 
     teams: list[str] = field(default_factory=lambda: [str(i) for i in range(1, 11)])
 
@@ -166,6 +174,7 @@ class GameState:
         gs.round = self.round
         gs.max_rounds = self.max_rounds
         gs.phase = self.phase
+        gs.sub_round = self.sub_round
         gs.teams = list(self.teams)
         gs.zones = {k: v.copy() for k, v in self.zones.items()}
         gs.national_power = dict(self.national_power)
@@ -177,6 +186,7 @@ class GameState:
             "round": self.round,
             "max_rounds": self.max_rounds,
             "phase": self.phase,
+            "sub_round": self.sub_round,
             "teams": self.teams,
             "zones": {
                 k: {
@@ -184,6 +194,7 @@ class GameState:
                     "troops": v.troops,
                     "total": v.total(),
                     "owner": v.owner(),
+                    "forced_owner": v.forced_owner,
                 }
                 for k, v in self.zones.items()
             },

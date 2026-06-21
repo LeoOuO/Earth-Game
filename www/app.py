@@ -60,6 +60,7 @@ def _validated_commands_dict():
                 "parse_ok": vc.result.ok,
                 "valid": vc.valid,
                 "reason": vc.reason or vc.result.error,
+                "warning": vc.warning,
                 "op": cmd.op if cmd else None,
                 "union_status": vc.union_status,
                 "union_partner": vc.union_partner,
@@ -151,7 +152,10 @@ def submit_commands(team):
     text = (request.json or {}).get("text", "")
 
     if team == "ADMIN":
-        _state.round_commands["ADMIN"] = [text]
+        # Admin set commands accumulate across multiple submits
+        if "ADMIN" not in _state.round_commands:
+            _state.round_commands["ADMIN"] = []
+        _state.round_commands["ADMIN"].append(text)
     else:
         _state.round_commands[team] = [text]
 
@@ -207,26 +211,34 @@ def execute():
 
 @app.route("/api/undo", methods=["POST"])
 def undo():
-    """Revert to previous state, saving current to redo stack."""
+    """Revert to previous non-intermediate state, skipping admin-only sub-versions."""
     global _state, _round_log
     if not _history:
         return jsonify({"error": "沒有可回復的歷史"}), 400
     _future.append(_state.copy())
     _state = _history.pop()
     _round_log = []
-    return jsonify({"ok": True, "state": _state.to_dict(), "can_redo": len(_future) > 0})
+    return jsonify({
+        "ok": True, "state": _state.to_dict(),
+        "can_undo": len(_history) > 0,
+        "can_redo": len(_future) > 0,
+    })
 
 
 @app.route("/api/redo", methods=["POST"])
 def redo():
-    """Advance to next state (redo after undo)."""
+    """Advance to next non-intermediate state (redo after undo), skipping sub-versions."""
     global _state, _round_log
     if not _future:
         return jsonify({"error": "沒有可前進的回合"}), 400
     _history.append(_state.copy())
     _state = _future.pop()
     _round_log = []
-    return jsonify({"ok": True, "state": _state.to_dict(), "can_undo": len(_history) > 0, "can_redo": len(_future) > 0})
+    return jsonify({
+        "ok": True, "state": _state.to_dict(),
+        "can_undo": len(_history) > 0,
+        "can_redo": len(_future) > 0,
+    })
 
 
 @app.route("/api/admin/set", methods=["POST"])

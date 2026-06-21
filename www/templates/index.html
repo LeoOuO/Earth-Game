@@ -33,14 +33,15 @@
     <div class="setup-section">
       <h2>初始領地設定</h2>
       <p style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
-        格式：<code style="color:var(--accent)">隊伍號:兵力</code>，多隊用逗號分隔。例：<code style="color:var(--accent)">1:500,2:200</code>
+        每個領地選擇初始佔領國及兵力，未選則開局為無人佔領。
       </p>
       <table id="territory-init-table">
         <thead>
           <tr>
             <th style="width:130px">領地</th>
             <th style="width:50px">難度</th>
-            <th>佔領者 + 兵力（格式：隊伍號:兵力，可多個）</th>
+            <th>佔領國</th>
+          <th style="width:100px">初始兵力</th>
           </tr>
         </thead>
         <tbody id="territory-init-tbody"></tbody>
@@ -55,7 +56,16 @@
       <div id="init-troops-rows" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;"></div>
     </div>
 
-    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;border-top:1px solid var(--border);padding-top:10px">
+      <span style="color:var(--text-muted);font-size:11px">快速填入：</span>
+      <button class="btn" style="font-size:11px" onclick="testInit()">🧪 測試用初始化</button>
+      <div style="display:flex;align-items:center;gap:4px">
+        <button class="btn" style="font-size:11px" onclick="uniformInit()">⚡ 均等初始化</button>
+        <input id="uniform-init-n" type="number" min="1" value="200"
+               class="setup-input" style="width:60px;font-size:11px" placeholder="n">
+        <span style="color:var(--text-muted);font-size:10px">兵/每區</span>
+      </div>
+      <div style="flex:1"></div>
       <button class="btn btn-primary" id="btn-start-game" onclick="startGame()">
         ▶ 開始遊戲
       </button>
@@ -76,7 +86,8 @@
     <div class="spacer"></div>
     <button class="btn btn-mode" id="btn-mode" onclick="toggleMode()">🗺 真實模式</button>
     <button class="btn btn-success" id="btn-execute" onclick="executeRound()">▶ 開始執行</button>
-    <button class="btn" onclick="openSetup()">⚙ 重新設定</button>
+    <button class="btn btn-settle" onclick="openSettlement()">🏆 結算</button>
+    <button class="btn" onclick="confirmReset()">⚙ 重新設定</button>
   </div>
 
   <!-- Phase banner -->
@@ -122,7 +133,7 @@
           <button class="tpl-btn" onclick="insertTemplate('attack(S, E, n)')">attack</button>
           <button class="tpl-btn" onclick="insertTemplate('union(S, P, E, n)')">union</button>
           <button class="tpl-btn" onclick="insertTemplate('union_attack(S, [P], E, n)')">union_attack</button>
-          <button class="tpl-btn tpl-admin" onclick="insertTemplate('set(zone, T:n)')">set</button>
+          <button class="tpl-btn tpl-admin" onclick="insertTemplate('set(zone, K, T:n)')">set</button>
         </div>
         <textarea id="cmd-textarea"
                   placeholder="貼上指令（英文代號，可多行）&#10;&#10;例：&#10;moving(HK, ELF, 500)&#10;attack(ELF, DV, 300)&#10;union(HK, 2, ELF, 200)&#10;union_attack(HK, [2,3], DV, 400)"
@@ -152,6 +163,18 @@
     <div id="exec-log-list"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px">
       <button class="btn" onclick="closeExecModal()">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settlement overlay -->
+<div id="settlement-overlay" onclick="if(event.target===this)closeSettlement()">
+  <div id="settlement-modal">
+    <h2>🏆 最終結算</h2>
+    <div id="settlement-list"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn" onclick="closeSettlement()">← 返回對局</button>
+      <button class="btn btn-danger" onclick="confirmReset()">⚙ 重新設定</button>
     </div>
   </div>
 </div>

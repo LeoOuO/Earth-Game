@@ -90,6 +90,8 @@ body {
 .btn-danger:hover { background: #2d1117; }
 .btn-success { border-color: var(--success); color: var(--success); }
 .btn-success:hover { background: #0d2117; }
+.btn-settle { border-color: #f0c040; color: #f0c040; }
+.btn-settle:hover { background: #2a2000; }
 .btn-mode {
   border-color: var(--pending);
   color: var(--pending);
@@ -381,6 +383,7 @@ body {
 .cmd-reason.error { color: var(--danger); }
 .cmd-reason.union-ok { color: var(--success); }
 .cmd-reason.union-pending { color: var(--pending); }
+.cmd-reason.cmd-warn { color: #e3b341; }
 .cmd-actions {
   display: flex;
   gap: 3px;
@@ -842,3 +845,41 @@ body {
 #phase-banner.show { display: block; }
 #phase-banner.done { background: #0d2117; color: var(--success); }
 #phase-banner.executing { background: #1c1500; color: var(--warning); }
+
+/* ── Settlement overlay ─────────────────────────────────────────────────── */
+#settlement-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.72);
+  display: none; align-items: center; justify-content: center;
+  z-index: 200;
+}
+#settlement-overlay.show { display: flex; }
+
+#settlement-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px 28px;
+  width: 480px; max-width: 96vw;
+  max-height: 82vh; overflow-y: auto;
+}
+#settlement-modal h2 { font-size: 18px; margin-bottom: 16px; color: #f0c040; }
+
+.settle-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 6px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.settle-row.rank-1 { border-color: #f0c040; background: #1e1800; }
+.settle-row.rank-2 { border-color: #c0c0c0; background: #181818; }
+.settle-row.rank-3 { border-color: #c86820; background: #1a1000; }
+
+.settle-rank { font-size: 18px; min-width: 28px; text-align: center; }
+.settle-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.settle-name { font-weight: 700; font-size: 14px; flex: 1; }
+.settle-stat { font-size: 11px; color: var(--text-muted); min-width: 60px; text-align: right; }
+.settle-power { font-size: 17px; font-weight: 700; min-width: 72px; text-align: right; }

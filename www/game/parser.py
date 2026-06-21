@@ -4,10 +4,11 @@ Command parser for 最終大戰.
 Accepted commands (spaces/newlines allowed freely except inside tokens):
   moving(S, E, n)
   attack(S, E, n)
-  union(S, P, E, n)           -- P before E (consistent with union_attack)
-  union_attack(S, P, E, n)   -- P can be [X,Y,...] or a single name
-  set(zone, A:n, B:n, ...)   -- admin: set zone state
-  set(zone)                  -- admin: clear zone
+  union(S, P, E, n)              -- P before E (consistent with union_attack)
+  union_attack(S, P, E, n)      -- P can be [X,Y,...] or a single name
+  set(zone, K, T:n, T:n, ...)   -- admin: set zone state; K = forced owner (team or 0 to clear)
+  set(zone, T:n, T:n, ...)      -- admin: set zone state without changing forced owner
+  set(zone)                     -- admin: clear zone
 """
 from __future__ import annotations
 import re
@@ -227,15 +228,29 @@ def _parse_union_attack(raw: str, args: list[str]) -> CommandResult:
 
 
 def _parse_set(raw: str, args: list[str]) -> CommandResult:
-    # set(zone)                  → clear
-    # set(zone, A:100, B:200)   → assign
+    # set(zone)                       → clear zone
+    # set(zone, T:n, ...)             → set troops (forced_owner unchanged)
+    # set(zone, K, T:n, ...)          → set troops + forced_owner = K (team or 0 to clear)
     if not args:
         return CommandResult(raw=raw, ok=False, error="set 至少需要 1 個參數（區域名稱）")
     zone = resolve_zone(args[0])
     if zone is None:
         return CommandResult(raw=raw, ok=False, error=f"未知區域：{args[0]!r}")
+
+    rest = args[1:]
+    forced_owner_str: Optional[str] = None  # None = not specified (leave as-is)
+
+    # If the second arg contains no colon, treat it as K (forced owner specifier)
+    if rest and ':' not in rest[0]:
+        k = rest[0].strip()
+        if k != '0' and k not in ALL_TEAMS:
+            return CommandResult(raw=raw, ok=False,
+                                 error=f"未知佔領國：{k!r}（應為隊伍號，或 0 表示清除）")
+        forced_owner_str = "" if k == '0' else k  # empty string = clear
+        rest = rest[1:]
+
     assignments: dict[str, int] = {}
-    for spec in args[1:]:
+    for spec in rest:
         if ':' not in spec:
             return CommandResult(raw=raw, ok=False,
                                  error=f"set 指令格式錯誤，每個分配應為 隊伍:兵力，得到 {spec!r}")
@@ -248,8 +263,16 @@ def _parse_set(raw: str, args: list[str]) -> CommandResult:
             return CommandResult(raw=raw, ok=False,
                                  error=f"兵力數必須為非負整數：{n_s!r}")
         assignments[team_s] = n
-    cmd = ParsedCommand(op="set", raw=raw, source=zone)
-    cmd.allies = list(assignments.items())  # reuse allies field as (team, n) pairs
+
+    # nation field: None = not specified; "" = clear; "1"-"10" = set
+    cmd = ParsedCommand(op="set", raw=raw, source=zone,
+                        nation=forced_owner_str if forced_owner_str is not None else "")
+    cmd.allies = list(assignments.items())  # (team, n) pairs
+    # Store whether K was explicitly given (nation="": clear; nation=None becomes "": ignored)
+    # Use a sentinel: if forced_owner_str is None we set nation to the special value "\x00"
+    # to signal "not specified". Engine checks for this.
+    if forced_owner_str is None:
+        cmd.nation = "\x00"  # sentinel: K not provided → leave forced_owner unchanged
     return CommandResult(raw=raw, ok=True, command=cmd)
 
 

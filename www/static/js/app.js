@@ -67,6 +67,7 @@ let validatedCommands = {};
 let execLog = [];
 let selectedTeam = '1';
 let currentMode = 'analysis';  // 'analysis' | 'real'
+let _initialSetupData = null;   // saved at startGame(), used to pre-fill on reset
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
@@ -96,13 +97,15 @@ function buildSetupScreen() {
   ISLANDS.forEach(zone => {
     const code = ISLAND_CODES[zone] || '';
     const tr = document.createElement('tr');
+    let opts = '<option value="">— 無 —</option>';
+    ALL_TEAMS.forEach(t => { opts += `<option value="${t}">隊 ${t}</option>`; });
     tr.innerHTML = `
       <td style="font-weight:600">${zone} <span style="font-size:9px;color:var(--accent);font-family:monospace">${code}</span></td>
       <td style="color:var(--text-muted)">${TERRITORY_DIFF[zone]||''}</td>
-      <td>
-        <input type="text" class="init-troops-input" style="width:240px"
-               placeholder="例：1:500,2:200"
-               data-zone="${zone}">
+      <td style="display:flex;align-items:center;gap:6px">
+        <select class="setup-input" data-zone-team="${zone}" style="width:75px">${opts}</select>
+        <input type="number" min="0" value="" class="setup-input" data-zone-n="${zone}"
+               placeholder="兵力" style="width:80px">
       </td>`;
     tbody.appendChild(tr);
   });
@@ -132,19 +135,13 @@ async function startGame() {
   if (teams.length < 2) { alert('至少選擇 2 支隊伍'); return; }
 
   const territories = {};
-  document.querySelectorAll('[data-zone]').forEach(input => {
-    const zone = input.dataset.zone;
-    const val = input.value.trim();
-    if (!val) return;
-    const troops = {};
-    val.split(',').forEach(part => {
-      const [team, n] = part.trim().split(':');
-      if (team && n) {
-        const num = parseInt(n);
-        if (!isNaN(num) && num > 0) troops[team.trim()] = num;
-      }
-    });
-    if (Object.keys(troops).length) territories[zone] = troops;
+  document.querySelectorAll('[data-zone-team]').forEach(sel => {
+    const zone = sel.dataset.zoneTeam;
+    const team = sel.value;
+    if (!team) return;
+    const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
+    const n = parseInt(nInp?.value) || 0;
+    if (n > 0) territories[zone] = {[team]: n};
   });
 
   const initTroops = {};
@@ -159,6 +156,22 @@ async function startGame() {
       territories['中立小島'][t] = (territories['中立小島'][t] || 0) + n;
     });
   }
+
+  // Save setup data for pre-filling on future reset
+  _initialSetupData = {
+    teams: [...teams],
+    max_rounds: rounds,
+    zoneData: {},    // zone → {team, n}
+    troopTexts: {},  // troop-team → value
+  };
+  document.querySelectorAll('[data-zone-team]').forEach(sel => {
+    const zone = sel.dataset.zoneTeam;
+    const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
+    _initialSetupData.zoneData[zone] = {team: sel.value, n: nInp?.value || ''};
+  });
+  document.querySelectorAll('[data-troop-team]').forEach(inp => {
+    _initialSetupData.troopTexts[inp.dataset.troopTeam] = inp.value;
+  });
 
   const res = await fetch('/api/setup', {
     method: 'POST',
@@ -221,10 +234,15 @@ function toggleMode() {
 /* ── Header ──────────────────────────────────────────────────────────────── */
 function updateHeader() {
   const s = gameState;
-  document.getElementById('round-info').textContent = `回合 ${s.round} / ${s.max_rounds}`;
+  const sub = s.sub_round || 0;
+  const roundStr = sub > 0
+    ? `回合 ${s.round}.${sub}`
+    : `回合 ${s.round} / ${s.max_rounds}`;
+  document.getElementById('round-info').textContent = roundStr;
+
   const banner = document.getElementById('phase-banner');
   if (s.phase === 'done') {
-    banner.textContent = '🏆 遊戲結束！最終國力排名見下方。';
+    banner.textContent = '🏆 遊戲結束！按「🏆 結算」查看最終排名。';
     banner.className = 'phase-banner show done';
     document.getElementById('btn-execute').disabled = true;
   } else {
@@ -418,6 +436,22 @@ function renderCommandLog() {
     container.appendChild(group);
   });
 
+  // Also render ADMIN (set) commands
+  const adminCmds = validatedCommands['ADMIN'];
+  if (adminCmds && adminCmds.length) {
+    hasAny = true;
+    const group = document.createElement('div');
+    group.className = 'team-group';
+    group.innerHTML = `
+      <div class="team-group-header">
+        <div class="team-group-dot" style="background:var(--text-muted)"></div>
+        <span style="color:var(--text-muted);font-weight:700">管理員</span>
+        <span style="color:var(--text-muted)">${adminCmds.length} 條 set 指令</span>
+      </div>`;
+    adminCmds.forEach(c => group.appendChild(makeCmdEntry(c, 'ADMIN')));
+    container.appendChild(group);
+  }
+
   if (!hasAny) {
     container.innerHTML = '<div class="empty-log">尚未輸入任何指令</div>';
   }
@@ -460,8 +494,10 @@ function makeCmdEntry(c, team) {
     } else {
       reasonText = '獨立進攻（無有效聯盟）';
     }
+    if (c.warning) { reasonText += `  ⚠ ${c.warning}`; reasonClass = 'cmd-warn'; }
   } else {
     statusIcon = '✓';
+    if (c.warning) { reasonText = `⚠ ${c.warning}`; reasonClass = 'cmd-warn'; }
   }
 
   div.className = entryClass;
@@ -608,8 +644,9 @@ function animateBoat(map, event, callback) {
   const tgt = getIslandCenter(map, event.to);
   if (!src || !tgt) { callback(); return; }
 
+  const isPenalty = event.kind === 'penalty';
   const color = TEAM_COLORS[event.team] || '#888';
-  const emoji = event.kind === 'moving' ? '⛵' : (event.kind === 'attack' ? '⚔️' : '🛡');
+  const emoji = isPenalty ? '⚔️' : (event.kind === 'moving' ? '⛵' : (event.kind === 'attack' ? '⚔️' : '🛡'));
   const boat = document.createElement('div');
   boat.className = 'boat';
   boat.style.cssText = `
@@ -632,8 +669,15 @@ function animateBoat(map, event, callback) {
   });
 
   setTimeout(() => {
-    boat.classList.add('fading');
-    setTimeout(() => { boat.remove(); callback(); }, 350);
+    if (isPenalty) {
+      // Show skull at target, then fade
+      boat.textContent = '💀';
+      boat.style.transition = 'opacity 0.5s';
+      setTimeout(() => { boat.classList.add('fading'); setTimeout(() => { boat.remove(); callback(); }, 500); }, 400);
+    } else {
+      boat.classList.add('fading');
+      setTimeout(() => { boat.remove(); callback(); }, 350);
+    }
   }, 850);
 }
 
@@ -763,15 +807,160 @@ async function deleteCmd(team, rawText) {
   updateCmdCountHint();
 }
 
-async function editCmd(team, rawText) {
-  // Switch to this team in the selector, populate textarea, then delete from log
+async function editCmd(team, _rawText) {
+  // Collect ALL commands for this team, put them in the textarea, then clear the log
+  const cmds = validatedCommands[team] || [];
+  const allText = cmds.map(c => c.raw).join('\n');
+
   const sel = document.getElementById('team-select');
   sel.value = team;
   selectedTeam = team;
   updateCmdCountHint();
-  document.getElementById('cmd-textarea').value = rawText;
-  await deleteCmd(team, rawText);
+  document.getElementById('cmd-textarea').value = allText;
+
+  // Clear the team's commands from the log
+  const res = await fetch(`/api/commands/${team}`, {method:'DELETE'});
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  validatedCommands = data.validated_commands || {};
+  renderCommandLog();
+  updateCmdCountHint();
   document.getElementById('cmd-textarea').focus();
+}
+
+/* ── Settlement screen ───────────────────────────────────────────────────── */
+function openSettlement() {
+  if (!gameState) return;
+  const np = gameState.national_power || {};
+  const teams = gameState.teams || [];
+  const sorted = [...teams].sort((a, b) => (np[b] || 0) - (np[a] || 0));
+
+  const MEDALS = ['🥇', '🥈', '🥉'];
+  const list = document.getElementById('settlement-list');
+  list.innerHTML = '';
+
+  sorted.forEach((team, i) => {
+    const power = np[team] || 0;
+    const troops = Object.values(gameState.zones || {})
+      .reduce((s, z) => s + ((z.troops || {})[team] || 0), 0);
+    const zoneCount = Object.values(gameState.zones || {})
+      .filter(z => z.owner === team).length;
+    const color = TEAM_COLORS[team] || '#888';
+    const medal = i < 3 ? MEDALS[i] : `${i + 1}`;
+
+    const row = document.createElement('div');
+    row.className = `settle-row${i < 3 ? ` rank-${i + 1}` : ''}`;
+    row.innerHTML = `
+      <div class="settle-rank">${medal}</div>
+      <div class="settle-dot" style="background:${color}"></div>
+      <div class="settle-name" style="color:${color}">隊 ${team}</div>
+      <div class="settle-stat">${zoneCount} 領地</div>
+      <div class="settle-stat">${troops}<span style="font-size:9px">⚔</span></div>
+      <div class="settle-power">${power}<span style="font-size:10px;opacity:.7">💎</span></div>
+    `;
+    list.appendChild(row);
+  });
+
+  document.getElementById('settlement-overlay').classList.add('show');
+}
+
+function closeSettlement() {
+  document.getElementById('settlement-overlay').classList.remove('show');
+}
+
+/* ── Confirm reset ───────────────────────────────────────────────────────── */
+function confirmReset() {
+  if (!confirm('確定要重新設定？目前的對局進度將結束。')) return;
+  closeSettlement();
+  openSetupWithPrefill();
+}
+
+function openSetupWithPrefill() {
+  if (_initialSetupData) {
+    // Restore team checkboxes
+    document.querySelectorAll('#team-checkboxes input[type=checkbox]').forEach(cb => {
+      const checked = _initialSetupData.teams.includes(cb.dataset.team);
+      cb.checked = checked;
+      cb.closest('label').classList.toggle('checked', checked);
+    });
+    // Restore round count
+    document.getElementById('setup-rounds').value = _initialSetupData.max_rounds;
+    // Restore territory inputs
+    document.querySelectorAll('[data-zone-team]').forEach(sel => {
+      const zone = sel.dataset.zoneTeam;
+      const d = _initialSetupData.zoneData?.[zone] || {};
+      sel.value = d.team || '';
+      const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
+      if (nInp) nInp.value = d.n || '';
+    });
+    // Restore troop inputs
+    document.querySelectorAll('[data-troop-team]').forEach(inp => {
+      inp.value = _initialSetupData.troopTexts[inp.dataset.troopTeam] || '0';
+    });
+  }
+  openSetup();
+}
+
+/* ── Quick init ──────────────────────────────────────────────────────────── */
+
+// 測試用一鍵初始化: 4 teams, pre-set territories and troops for quick testing
+function testInit() {
+  // Set rounds to 3
+  document.getElementById('setup-rounds').value = 3;
+
+  // Check all 10 teams
+  document.querySelectorAll('#team-checkboxes input[type=checkbox]').forEach(cb => {
+    cb.checked = true;
+    cb.closest('label').classList.add('checked');
+  });
+
+  // Clear all territory inputs
+  document.querySelectorAll('[data-zone-team]').forEach(sel => { sel.value = ''; });
+  document.querySelectorAll('[data-zone-n]').forEach(inp => { inp.value = ''; });
+
+  // Set initial territories for teams 1–4 only
+  const territories = {
+    '人類王國': {team: '1', n: '500'},
+    '精靈森域': {team: '2', n: '400'},
+    '龍族火山': {team: '3', n: '300'},
+    '獸人荒原': {team: '4', n: '200'},
+  };
+  Object.entries(territories).forEach(([zone, d]) => {
+    const sel = document.querySelector(`[data-zone-team="${zone}"]`);
+    const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
+    if (sel) sel.value = d.team;
+    if (nInp) nInp.value = d.n;
+  });
+
+  // Set init troops for all 10 teams
+  const troops = {'1':300,'2':250,'3':200,'4':150};
+  document.querySelectorAll('[data-troop-team]').forEach(inp => {
+    inp.value = troops[inp.dataset.troopTeam] || 0;
+  });
+}
+
+// 一鍵初始化: all 10 teams × all islands + neutral island each get n troops
+function uniformInit() {
+  const n = parseInt(document.getElementById('uniform-init-n').value) || 0;
+  if (n <= 0) { alert('請輸入正整數 n'); return; }
+
+  // Check all 10 teams first
+  document.querySelectorAll('#team-checkboxes input[type=checkbox]').forEach(cb => {
+    cb.checked = true;
+    cb.closest('label').classList.add('checked');
+  });
+
+  // All teams
+  const activeTeams = ALL_TEAMS.slice();
+
+  // Distribute 12 territories round-robin among 10 teams with n troops each
+  document.querySelectorAll('[data-zone-team]').forEach((sel, i) => {
+    sel.value = ALL_TEAMS[i % ALL_TEAMS.length];
+  });
+  document.querySelectorAll('[data-zone-n]').forEach(inp => { inp.value = n; });
+
+  // Set init troops (neutral island) for all 10 teams
+  document.querySelectorAll('[data-troop-team]').forEach(inp => { inp.value = n; });
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */

@@ -29,6 +29,7 @@ class ValidatedCmd:
     team: str
     valid: bool = False
     reason: str = ""
+    warning: str = ""  # non-fatal warning (valid but penalized)
     # Union-specific
     union_status: str = ""    # "" | "pending" | "confirmed"
     union_partner: str = ""   # partner team letter for union
@@ -61,15 +62,16 @@ class RoundValidator:
         for team, results in cmds_by_team.items():
             vcmds[team] = [self._validate_one(team, r) for r in results]
 
-        # ── Step 2: enforce 3-op limit per team ──────────────────────────
+        # ── Step 2: enforce 5-op limit per team ──────────────────────────
+        # Only valid commands count; truly-invalid commands (無效操作) do not consume slots.
         for team, vlist in vcmds.items():
             ok_count = 0
             for vc in vlist:
                 if vc.valid and vc.result.command and vc.result.command.op != "set":
                     ok_count += 1
-                    if ok_count > 3:
+                    if ok_count > 5:
                         vc.valid = False
-                        vc.reason = "超過每回合 3 次操作上限"
+                        vc.reason = "超過每回合 5 次操作上限（靜默忽略）"
 
         # ── Step 3: per-territory conflict check ─────────────────────────
         # Sum troops required from each source zone per team
@@ -139,34 +141,47 @@ class RoundValidator:
                 vc.valid = False
                 vc.reason = f"{cmd.source} 不在己方控制下（無法移動）"
                 return vc
+            if cmd.n <= 0:
+                vc.valid = False
+                vc.reason = "兵力數必須為正整數（1以上）"
+                return vc
+            # Round-1 resource point restriction
+            if cmd.target in RESOURCE_POINTS and state.round == 1:
+                vc.valid = False
+                vc.reason = f"第一回合不可移動至資源點 {cmd.target}"
+                return vc
             if cmd.target == NEUTRAL_ISLAND or cmd.target in RESOURCE_POINTS:
-                pass  # always movable
+                pass  # always movable (if not round-1 locked)
             elif not self._team_controls_zone(team, cmd.target):
                 vc.valid = False
                 vc.reason = f"moving 不可移動至他國領地 {cmd.target}"
                 return vc
-            if cmd.n > team_troops:
-                vc.valid = False
-                vc.reason = f"兵力不足：{cmd.source} 只有 {team_troops}，需要 {cmd.n}"
-                return vc
+            # n > team_troops is caught by the conflict check (Step 3); triggers penalty
 
         elif cmd.op == "attack":
             if not self._team_controls_zone(team, cmd.source):
                 vc.valid = False
                 vc.reason = f"{cmd.source} 不在己方控制下"
                 return vc
-            if cmd.target == NEUTRAL_ISLAND:
+            if cmd.n <= 0:
                 vc.valid = False
-                vc.reason = "不可進攻中立小島（中立小島不可被進攻）"
+                vc.reason = "兵力數必須為正整數（1以上）"
+                return vc
+            # Round-1 resource point restriction (invalid, not penalized)
+            if cmd.target in RESOURCE_POINTS and state.round == 1:
+                vc.valid = False
+                vc.reason = f"第一回合不可進攻資源點 {cmd.target}"
                 return vc
             if self._team_owns_territory(team, cmd.target):
                 vc.valid = False
                 vc.reason = f"不可進攻己方領地 {cmd.target}"
                 return vc
-            if cmd.n > team_troops:
-                vc.valid = False
-                vc.reason = f"兵力不足：{cmd.source} 只有 {team_troops}，需要 {cmd.n}"
-                return vc
+            # n > team_troops is caught by the conflict check (Step 3); triggers penalty
+            # Valid but penalized: neutral island or resource point target
+            if cmd.target == NEUTRAL_ISLAND:
+                vc.warning = f"進攻中立小島違反世界法：{cmd.n} 兵力損失（自殺）"
+            elif cmd.target in RESOURCE_POINTS:
+                vc.warning = f"進攻資源點違反世界法：{cmd.n} 兵力損失（自殺）"
 
         elif cmd.op == "union":
             if cmd.nation == team:
@@ -194,10 +209,11 @@ class RoundValidator:
                     vc.valid = False
                     vc.reason = f"{cmd.source} 不在己方控制下（無法移動）"
                     return vc
-                if cmd.n > team_troops:
+                if cmd.n <= 0:
                     vc.valid = False
-                    vc.reason = f"兵力不足：{cmd.source} 只有 {team_troops}，需要 {cmd.n}"
+                    vc.reason = "兵力數必須為正整數（1以上）"
                     return vc
+                # n > team_troops caught by conflict check (Step 3)
             else:
                 vc.valid = False
                 vc.reason = (
@@ -215,18 +231,34 @@ class RoundValidator:
                 vc.valid = False
                 vc.reason = "union_attack 的盟友列表不能包含自己"
                 return vc
-            if cmd.target == NEUTRAL_ISLAND:
+            if cmd.n <= 0:
                 vc.valid = False
-                vc.reason = "不可進攻中立小島"
+                vc.reason = "兵力數必須為正整數（1以上）"
+                return vc
+            # Round-1 resource point restriction (invalid)
+            if cmd.target in RESOURCE_POINTS and state.round == 1:
+                vc.valid = False
+                vc.reason = f"第一回合不可進攻資源點 {cmd.target}"
                 return vc
             if self._team_owns_territory(team, cmd.target):
                 vc.valid = False
                 vc.reason = f"不可進攻己方領地 {cmd.target}"
                 return vc
-            if cmd.n > team_troops:
-                vc.valid = False
-                vc.reason = f"兵力不足：{cmd.source} 只有 {team_troops}，需要 {cmd.n}"
-                return vc
+            # E cannot be any ally's territory (駐守 OK, 領主 NG — §3.4)
+            for ally in cmd.allies:
+                if self._team_owns_territory(ally, cmd.target):
+                    vc.valid = False
+                    vc.reason = (
+                        f"union_attack 目標 {cmd.target} 為盟友 {ally} 的領地，"
+                        "不可聯合進攻盟友領地（若盟友只是駐守則允許）"
+                    )
+                    return vc
+            # n > team_troops caught by conflict check (Step 3)
+            # Valid but penalized: neutral island or resource point target
+            if cmd.target == NEUTRAL_ISLAND:
+                vc.warning = f"聯合進攻中立小島違反世界法：{cmd.n} 兵力損失（自殺）"
+            elif cmd.target in RESOURCE_POINTS:
+                vc.warning = f"聯合進攻資源點違反世界法：{cmd.n} 兵力損失（自殺）"
 
         vc.valid = True
         return vc
@@ -375,6 +407,13 @@ def execute_round(
     anim: list[dict] = []  # animation events
     new_state = state.copy()
 
+    # Record round-start zone owners BEFORE any operations
+    # Used to ensure a 領主 with 0 troops still acts as nominal defender in Phase 2
+    zone_start_owners: dict[str, Optional[str]] = {
+        zone: zs.owner()
+        for zone, zs in state.zones.items()
+    }
+
     # ── Phase 0: Admin set() ───────────────────────────────────────────────
     for team, vlist in vcmds.items():
         for vc in vlist:
@@ -387,12 +426,40 @@ def execute_round(
                 for t, n in cmd.allies:  # (team, troops) pairs
                     if n > 0:
                         new_troops[t] = n
-                new_state.zones[zone] = ZoneState(troops=new_troops)
-                if new_troops:
-                    summary = ", ".join(f"{t}:{n}" for t, n in new_troops.items())
-                    log.append(f"[管理員] 設定 {zone}：{summary}")
+                # Determine forced_owner:
+                #   cmd.nation == "\x00"  → K not provided, keep existing forced_owner
+                #   cmd.nation == ""      → K=0, clear forced_owner
+                #   cmd.nation == "1"-"10"→ set forced_owner to that team
+                existing_fo = new_state.zones[zone].forced_owner
+                if cmd.nation == "\x00":
+                    fo = existing_fo  # unchanged
+                elif cmd.nation == "":
+                    fo = None  # clear
                 else:
-                    log.append(f"[管理員] 清除 {zone}")
+                    fo = cmd.nation  # set
+
+                new_state.zones[zone] = ZoneState(troops=new_troops, forced_owner=fo)
+
+                parts = []
+                if new_troops:
+                    parts.append(", ".join(f"{t}:{n}" for t, n in new_troops.items()))
+                else:
+                    parts.append("（清空）")
+                if fo:
+                    parts.append(f"佔領國={fo}")
+                elif cmd.nation == "":
+                    parts.append("佔領國已清除")
+                log.append(f"[管理員] 設定 {zone}：{'  '.join(parts)}")
+
+    # Admin-only round: ADMIN has valid set commands AND no non-ADMIN team submitted anything.
+    # Empty round (no commands at all) → normal round advance, not intermediate.
+    _has_admin_cmds = any(vc.valid for vc in vcmds.get("ADMIN", []))
+    _has_non_admin_input = any(
+        len(vlist) > 0
+        for team, vlist in vcmds.items()
+        if team != "ADMIN"
+    )
+    _admin_only = _has_admin_cmds and not _has_non_admin_input
 
     # ── Phase 1: Simultaneous moves ───────────────────────────────────────
     # Read from state (start-of-round), accumulate deltas
@@ -407,6 +474,7 @@ def execute_round(
 
     # Track zones whose troops are fully invalidated (conflict penalty)
     penalty_zones: dict[str, set[str]] = {}  # zone → set of teams
+    conflict_penalized_teams: set[str] = set()  # teams penalized this round (no ×1.5)
 
     # First pass: find penalty zones (already marked invalid due to conflict)
     for team, vlist in vcmds.items():
@@ -423,6 +491,7 @@ def execute_round(
         for team in teams:
             amount = state.zones[zone].troops.get(team, 0)
             if amount > 0:
+                conflict_penalized_teams.add(team)
                 delta_out.setdefault(zone, {})[team] = \
                     delta_out.get(zone, {}).get(team, 0) + amount
                 # Move to neutral island
@@ -457,14 +526,22 @@ def execute_round(
 
             elif cmd.op == "attack":
                 add_delta_out(cmd.source, team, cmd.n)
-                attacks.setdefault(cmd.target, []).append({
-                    "team": team,
-                    "n": cmd.n,
-                    "coalition": f"solo_{team}",
-                })
-                log.append(f"{team}: attack({cmd.source} → {cmd.target}, {cmd.n})")
-                anim.append({"type":"move","team":team,"from":cmd.source,
-                              "to":cmd.target,"n":cmd.n,"kind":"attack"})
+                if cmd.target == NEUTRAL_ISLAND or cmd.target in RESOURCE_POINTS:
+                    # Penalty attack: troops are lost, no battle at target
+                    log.append(
+                        f"[懲罰] {team}: attack→{cmd.target} 違反世界法，損失 {cmd.n} 兵力"
+                    )
+                    anim.append({"type":"move","team":team,"from":cmd.source,
+                                  "to":cmd.target,"n":cmd.n,"kind":"penalty"})
+                else:
+                    attacks.setdefault(cmd.target, []).append({
+                        "team": team,
+                        "n": cmd.n,
+                        "coalition": f"solo_{team}",
+                    })
+                    log.append(f"{team}: attack({cmd.source} → {cmd.target}, {cmd.n})")
+                    anim.append({"type":"move","team":team,"from":cmd.source,
+                                  "to":cmd.target,"n":cmd.n,"kind":"attack"})
 
             elif cmd.op == "union":
                 if vc.union_status == "confirmed" and vc.union_role == "requesting":
@@ -490,19 +567,27 @@ def execute_round(
                 all_in_coalition = sorted([team] + vc.effective_allies)
                 cid = "coa_" + "_".join(all_in_coalition) + "_" + cmd.target
                 add_delta_out(cmd.source, team, cmd.n)
-                attacks.setdefault(cmd.target, []).append({
-                    "team": team,
-                    "n": cmd.n,
-                    "coalition": cid,
-                })
-                allies_str = "+".join(vc.effective_allies) if vc.effective_allies else "solo"
-                log.append(
-                    f"{team}: union_attack → {cmd.target}, "
-                    f"盟友:{allies_str}, 出兵:{cmd.n}"
-                )
-                anim.append({"type":"move","team":team,"from":cmd.source,
-                              "to":cmd.target,"n":cmd.n,"kind":"union_attack",
-                              "allies":vc.effective_allies})
+                if cmd.target == NEUTRAL_ISLAND or cmd.target in RESOURCE_POINTS:
+                    # Penalty: all coalition members lose troops, no battle
+                    log.append(
+                        f"[懲罰] {team}: union_attack→{cmd.target} 違反世界法，損失 {cmd.n} 兵力"
+                    )
+                    anim.append({"type":"move","team":team,"from":cmd.source,
+                                  "to":cmd.target,"n":cmd.n,"kind":"penalty"})
+                else:
+                    attacks.setdefault(cmd.target, []).append({
+                        "team": team,
+                        "n": cmd.n,
+                        "coalition": cid,
+                    })
+                    allies_str = "+".join(vc.effective_allies) if vc.effective_allies else "solo"
+                    log.append(
+                        f"{team}: union_attack → {cmd.target}, "
+                        f"盟友:{allies_str}, 出兵:{cmd.n}"
+                    )
+                    anim.append({"type":"move","team":team,"from":cmd.source,
+                                  "to":cmd.target,"n":cmd.n,"kind":"union_attack",
+                                  "allies":vc.effective_allies})
 
     # Apply delta_out (subtract from state into new_state)
     for zone, team_amounts in delta_out.items():
@@ -518,146 +603,268 @@ def execute_round(
                 new_state.zones[zone].troops.get(team, 0) + amount
 
     # ── Phase 2: Resolve battles ──────────────────────────────────────────
-    for target, attacker_list in attacks.items():
-        # Group by coalition
-        coalition_troops: dict[str, dict[str, int]] = {}  # cid → {team: n}
-        for a in attacker_list:
-            coalition_troops.setdefault(a["coalition"], {})[a["team"]] = a["n"]
+    if not _admin_only:
+        for target, attacker_list in attacks.items():
+            # ── Garrison betrayal detection ────────────────────────────────
+            # If an attacking team already has troops at the target, those troops
+            # are frozen (excluded from both attack and defence calculations).
+            garrison: dict[str, int] = {}  # team → n_Ac (frozen troops at target)
+            for a in attacker_list:
+                t = a["team"]
+                n_ac = new_state.zones[target].troops.get(t, 0)
+                if n_ac > 0:
+                    garrison[t] = n_ac
+    
+            # ── Build coalition_troops ─────────────────────────────────────
+            coalition_troops: dict[str, dict[str, int]] = {}
+            for a in attacker_list:
+                coalition_troops.setdefault(a["coalition"], {})[a["team"]] = a["n"]
+    
+            # Defender = current zone troops MINUS frozen garrison
+            raw_defender = dict(new_state.zones[target].troops)
+            defender_troops = {t: n for t, n in raw_defender.items() if t not in garrison}
 
-        # Include the current defender (from new_state after moves applied)
-        defender_troops = dict(new_state.zones[target].troops)
-        if defender_troops:
-            defender_cid = "defender"
-            coalition_troops[defender_cid] = defender_troops
-        else:
-            defender_cid = None
+            # Ensure round-start 領主 is nominal defender even if they moved all troops away
+            start_owner = zone_start_owners.get(target)
+            if start_owner and start_owner not in garrison and start_owner not in defender_troops:
+                defender_troops[start_owner] = 0
 
-        # Sum troops per coalition
-        totals: dict[str, int] = {
-            cid: sum(troops.values())
-            for cid, troops in coalition_troops.items()
-        }
-
-        if not totals:
-            continue
-
-        # Winner: coalition with most troops
-        winner_cid = max(totals, key=lambda c: totals[c])
-        winner_total = totals[winner_cid]
-
-        # Tie check
-        tied = [c for c, t in totals.items() if t == winner_total]
-        if len(tied) > 1:
-            # Defender wins ties
-            if defender_cid in tied:
-                winner_cid = defender_cid
+            if defender_troops:
+                defender_cid = "defender"
+                coalition_troops[defender_cid] = defender_troops
             else:
-                # Stable order: alphabetically first coalition
-                winner_cid = min(tied)
-
-        # Compute bonus: winner gets 20% of each loser's troops
-        loser_total = sum(t for c, t in totals.items() if c != winner_cid)
-        bonus = math.floor(loser_total * 0.20)
-
-        # Build new zone state
-        new_troops: dict[str, int] = {}
-        for cid, team_troops_map in coalition_troops.items():
-            if cid == winner_cid:
-                # Add proportional bonus to each winner team
-                for t, n in team_troops_map.items():
-                    proportion = n / winner_total if winner_total > 0 else 0
-                    new_troops[t] = n + math.floor(bonus * proportion)
-            else:
-                # Losers lose all sent troops
-                for t in team_troops_map:
-                    new_troops[t] = 0
-
-        # Clean zeroes
-        new_troops = {t: n for t, n in new_troops.items() if n > 0}
-        new_state.zones[target] = ZoneState(troops=new_troops)
-
-        winners_str = "+".join(coalition_troops[winner_cid].keys())
-        losers = [c for c in totals if c != winner_cid]
-        losers_str = ", ".join(
-            "+".join(coalition_troops[c].keys()) for c in losers
-        )
-        loser_teams = [t for c in losers for t in coalition_troops[c].keys()]
-        log.append(
-            f"[戰鬥] {target}：{winners_str} 勝（{winner_total}兵），"
-            f"獲得 {bonus} 獎勵兵力；失敗方：{losers_str}"
-        )
-        anim.append({
-            "type": "battle",
-            "zone": target,
-            "winner_teams": list(coalition_troops[winner_cid].keys()),
-            "loser_teams": loser_teams,
-            "winner_total": winner_total,
-            "bonus": bonus,
-        })
-
-    # ── Phase 3: National power from territories ──────────────────────────
-    for zone in ISLANDS:
-        x = TERRITORY_POWER.get(zone, 700)
-        z_state = new_state.zones[zone]
-        total_t = z_state.total()
-        if total_t == 0:
-            continue
-
-        # Solo occupant
-        if len(z_state.troops) == 1:
-            team = next(iter(z_state.troops))
-            new_state.national_power[team] = \
-                new_state.national_power.get(team, 0) + x
-            log.append(f"[國力] {zone}({x})：{team} +{x}")
-        else:
-            # Owner gets ½X + ½X * own_proportion; others get ½X * proportion
-            owner = z_state.owner()
-            half_x = x / 2
-            gained = {}
-            for team, troops in z_state.troops.items():
-                prop = troops / total_t
-                if team == owner:
-                    share = math.floor(half_x + half_x * prop)
+                defender_cid = None
+    
+            if not coalition_troops:
+                continue
+    
+            # ── Tie-breaking battle loop ────────────────────────────────────
+            # Iteratively eliminate equal-size tied attackers until a winner emerges.
+            active = dict(coalition_troops)  # cid → {team: n}
+            eliminated_troops: int = 0  # total troops from mutually-eliminated coalitions
+    
+            winner_cid: Optional[str] = None
+            while True:
+                totals = {cid: sum(tm.values()) for cid, tm in active.items()}
+                if not totals:
+                    break  # everyone eliminated
+    
+                max_total = max(totals.values())
+                tied = [c for c, v in totals.items() if v == max_total]
+    
+                if len(tied) == 1:
+                    winner_cid = tied[0]
+                    break
+    
+                # Rule 1: defender wins ties
+                if defender_cid in tied:
+                    winner_cid = defender_cid
+                    break
+    
+                # Rule 2: smallest coalition wins
+                min_size = min(len(active[c]) for c in tied)
+                smallest = [c for c in tied if len(active[c]) == min_size]
+    
+                if len(smallest) == 1:
+                    winner_cid = smallest[0]
+                    break
+    
+                # Rule 3: all equal-size tied → mutual elimination (no 20% bonus)
+                for c in smallest:
+                    eliminated_troops += totals[c]
+                    del active[c]
+                elim_str = ", ".join(
+                    "+".join(coalition_troops[c]) for c in smallest
+                )
+                log.append(f"[戰鬥] {target}：同歸於盡（{elim_str}，各損失派遣兵力）")
+    
+            if winner_cid is None:
+                # All attackers eliminated; defender (if any) survives unchanged
+                if defender_cid:
+                    new_state.zones[target] = ZoneState(troops=dict(defender_troops))
                 else:
-                    share = math.floor(half_x * prop)
-                if share > 0:
-                    gained[team] = share
-            for team, share in gained.items():
-                new_state.national_power[team] = \
-                    new_state.national_power.get(team, 0) + share
-            log.append(
-                f"[國力] {zone}({x})：" +
-                ", ".join(f"{t}+{s}" for t, s in gained.items())
+                    new_state.zones[target] = ZoneState(troops={})
+                # Losing garrison → add n_Ac to loser pool for winner (no winner → lost)
+                # (no winner exists here, garrison troops simply disappear)
+                for t, n_ac in garrison.items():
+                    log.append(f"[駐守叛變] {t} 駐守 n_Ac={n_ac} 隨攻方消滅")
+                log.append(f"[戰鬥] {target}：攻方全滅，守方原地不動")
+                continue
+    
+            winner_total = sum(active[winner_cid].values())
+
+            # Loser total from remaining active (not the eliminated ones)
+            loser_total = sum(
+                sum(tm.values()) for c, tm in active.items() if c != winner_cid
             )
 
-    # ── Phase 4: Neutral island ───────────────────────────────────────────
-    neutral = new_state.zones[NEUTRAL_ISLAND]
-    for team in list(neutral.troops.keys()):
-        n = neutral.troops.get(team, 0)
-        if n > 0:
-            new_n = math.floor(n * 1.5)
-            neutral.troops[team] = new_n
-            log.append(f"[中立] {team} 兵力 {n} × 1.5 = {new_n}")
+            # ── Garrison fate: split into winning / losing ─────────────────
+            winning_garrison = {
+                t: n_ac for t, n_ac in garrison.items()
+                if t in active.get(winner_cid, {})
+            }
+            losing_garrison = {
+                t: n_ac for t, n_ac in garrison.items()
+                if t not in active.get(winner_cid, {})
+            }
 
-    # 0-troop relief (teams with no troops anywhere get 1000)
-    for team in new_state.teams:
-        total = new_state.total_troops(team)
-        if total == 0:
-            new_state.zones[NEUTRAL_ISLAND].troops[team] = \
-                new_state.zones[NEUTRAL_ISLAND].troops.get(team, 0) + 1000
-            log.append(f"[救濟] {team} 兵力為 0，獲得 1000 兵力（中立小島）")
+            # Sum all loser pools first, then apply single floor (§4.1).
+            # Includes: active losers + mutually-eliminated troops + losing garrison n_Ae.
+            # Excludes: winning garrison n_Ae (returned directly to A, not in pool).
+            total_loser_pool = sum(
+                sum(tm.values()) for c, tm in active.items() if c != winner_cid
+            )
+            total_loser_pool += eliminated_troops
+            for _n in losing_garrison.values():
+                total_loser_pool += _n
+            bonus = math.floor(total_loser_pool * 0.20)
 
-    # ── Phase 5: Resource points (unlocked from round 2) ─────────────────
-    if new_state.round >= 2:
-        _settle_resource_points(new_state, log)
+            # ── Build new zone troops ───────────────────────────────────────
+            new_troops: dict[str, int] = {}
 
-    # Advance round
-    new_state.round += 1
-    if new_state.round > new_state.max_rounds:
-        new_state.phase = "done"
+            # Each winner independently gets own troops + full bonus (§4.1)
+            for t, n in active[winner_cid].items():
+                new_troops[t] = n + bonus
+
+            # Losers (still in active) lose all sent troops.
+            # Teams that also appear in the winner coalition keep their winner-side troops.
+            winner_teams = set(active[winner_cid].keys())
+            for cid, tm in active.items():
+                if cid == winner_cid:
+                    continue
+                for t in tm:
+                    if t not in winner_teams:
+                        new_troops[t] = 0
+
+            # Winning garrison: n_Ac returned in full
+            for t, n_ac in winning_garrison.items():
+                new_troops[t] = new_troops.get(t, 0) + n_ac
+                log.append(f"[駐守叛變] {t} 攻方獲勝，n_Ac={n_ac} 完整返還")
+
+            # Losing garrison: included in per-coalition bonus above
+            for t, n_ac in losing_garrison.items():
+                log.append(f"[駐守叛變] {t} 攻方失敗，n_Ac={n_ac} 入敗方兵力池（已合算）")
+
+            if losing_garrison:
+                log.append(f"[駐守叛變] 勝方共獲 {bonus} 獎勵兵力（含駐守叛變）")
+
+            # ── Determine new forced_owner (persists even at 0 troops, rule 1) ──
+            if winner_cid == "defender":
+                new_forced_owner = zone_start_owners.get(target)
+            else:
+                attack_forces = active[winner_cid]
+                new_forced_owner = max(attack_forces, key=attack_forces.get) if attack_forces else None
+
+            # Clean zeroes (garrison 0-troop = abandon; owner 0-troop stays via forced_owner)
+            new_troops = {t: n for t, n in new_troops.items() if n > 0}
+            new_zone = ZoneState(troops=new_troops)
+            new_zone.forced_owner = new_forced_owner
+            new_state.zones[target] = new_zone
+    
+            winners_str = "+".join(active[winner_cid].keys())
+            losers = [c for c in active if c != winner_cid]
+            losers_str = ", ".join("+".join(active[c].keys()) for c in losers)
+            loser_teams = [t for c in losers for t in active[c].keys()]
+            log.append(
+                f"[戰鬥] {target}：{winners_str} 勝（{winner_total}兵），"
+                f"獲得 {bonus} 獎勵兵力；失敗方：{losers_str or '無'}"
+            )
+            anim.append({
+                "type": "battle",
+                "zone": target,
+                "winner_teams": list(active[winner_cid].keys()),
+                "loser_teams": loser_teams,
+                "winner_total": winner_total,
+                "bonus": bonus,
+            })
+    
+    if not _admin_only:
+        # ── Phase 3: National power from territories ───────────────────────
+        for zone in ISLANDS:
+            x = TERRITORY_POWER.get(zone, 700)
+            z_state = new_state.zones[zone]
+            total_t = z_state.total()
+            if total_t == 0:
+                continue
+
+            if len(z_state.troops) == 1:
+                team = next(iter(z_state.troops))
+                new_state.national_power[team] = \
+                    new_state.national_power.get(team, 0) + x
+                log.append(f"[國力] {zone}({x})：{team} +{x}")
+            else:
+                owner = z_state.owner()
+                half_x = x / 2
+                gained = {}
+                for team, troops in z_state.troops.items():
+                    prop = troops / total_t
+                    if team == owner:
+                        share = math.floor(half_x + half_x * prop)
+                    else:
+                        share = math.floor(half_x * prop)
+                    if share > 0:
+                        gained[team] = share
+                for team, share in gained.items():
+                    new_state.national_power[team] = \
+                        new_state.national_power.get(team, 0) + share
+                log.append(
+                    f"[國力] {zone}({x})：" +
+                    ", ".join(f"{t}+{s}" for t, s in gained.items())
+                )
+
+        # ── Phase 4: Neutral island ────────────────────────────────────────
+        neutral = new_state.zones[NEUTRAL_ISLAND]
+        for team in list(neutral.troops.keys()):
+            n = neutral.troops.get(team, 0)
+            if n > 0:
+                if team in conflict_penalized_teams:
+                    log.append(f"[中立] {team} 因衝突懲罰，本回合跳過中立小島 ×1.5")
+                else:
+                    new_n = math.floor(n * 1.5)
+                    neutral.troops[team] = new_n
+                    log.append(f"[中立] {team} 兵力 {n} × 1.5 = {new_n}")
+
+        # 0-troop relief (teams with no troops anywhere get 1000)
+        for team in new_state.teams:
+            total = new_state.total_troops(team)
+            if total == 0:
+                new_state.zones[NEUTRAL_ISLAND].troops[team] = \
+                    new_state.zones[NEUTRAL_ISLAND].troops.get(team, 0) + 1000
+                log.append(f"[救濟] {team} 兵力為 0，獲得 1000 兵力（中立小島）")
+
+        # ── Phase 5: Resource points (unlocked from round 2) ──────────────
+        if new_state.round >= 2:
+            _settle_resource_points(new_state, log)
+
+    # Advance round — or create intermediate sub-version for admin-only rounds
+    if not _admin_only:
+        # Normal round: advance round number, reset sub_round
+        new_state.sub_round = 0
+        new_state.round += 1
+        if new_state.round > new_state.max_rounds:
+            new_state.phase = "done"
+        else:
+            new_state.phase = "input"
     else:
-        new_state.phase = "input"
+        # Admin-only round: create intermediate sub-version X.1, X.2, ...
+        new_state.sub_round = state.sub_round + 1
+        new_state.phase = state.phase  # preserve current phase
+
     new_state.round_commands = {t: [] for t in new_state.teams}
+    new_state.round_commands["ADMIN"] = []
+
+    # Persist ownership: set forced_owner for zones not yet tracked (e.g. initial round)
+    # so that 0-troop owners are recognized as nominal defenders in subsequent rounds.
+    for zone, zs in new_state.zones.items():
+        if zs.forced_owner is None and zs.troops:
+            by_t = sorted(zs.troops.items(), key=lambda kv: kv[1], reverse=True)
+            if len(by_t) == 1 or by_t[0][1] > by_t[1][1]:
+                new_state.zones[zone].forced_owner = by_t[0][0]
+
+    # Remove all 0-troop entries (garrison 0 = abandon; owner 0 preserved via forced_owner)
+    for zs in new_state.zones.values():
+        for team in [t for t, n in zs.troops.items() if n == 0]:
+            del zs.troops[team]
 
     return new_state, log, anim
 
