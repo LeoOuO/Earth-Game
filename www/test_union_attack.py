@@ -296,3 +296,84 @@ if __name__ == "__main__":
     print(f"Results: {passed}/{passed+failed} PASSED")
     if failed:
         sys.exit(1)
+
+
+# ── Multi-source union_attack tests ──────────────────────────────────────────
+# A coalition is matched per-team, so if A and B mutually agree to fight E,
+# ALL of A's union_attack commands targeting E (naming B) join the coalition.
+
+from game.engine import execute_round as _execute_round
+
+# teams "1"=A, "2"=B, "3"=C (parser only accepts teams 1-10)
+_T1, _T2, _T3, _T4 = "1", "2", "3", "4"
+
+
+def _multi_source_state():
+    """Team 1 owns zones[0] AND zones[1]; team 2 owns zones[2]; team 3 owns zones[3]."""
+    state = GameState(teams=[_T1, _T2, _T3])
+    state.zones[_ZONES[0]] = ZoneState(troops={_T1: 500})
+    state.zones[_ZONES[1]] = ZoneState(troops={_T1: 500})
+    state.zones[_ZONES[2]] = ZoneState(troops={_T2: 500})
+    state.zones[_ZONES[3]] = ZoneState(troops={_T3: 100})
+    return state
+
+
+def test_multi_source_coalition_both_cmds_get_allies():
+    """Team 1 sends from 2 zones + team 2 sends from 1 zone, all mutual → both cmds in coalition."""
+    state = _multi_source_state()
+    E = _ZONES[3]
+    vcmds = RoundValidator(state).validate_all({
+        _T1: parse_commands(
+            f"union_attack({_ZONES[0]}, [2], {E}, 200) "
+            f"union_attack({_ZONES[1]}, [2], {E}, 100)"
+        ),
+        _T2: parse_commands(f"union_attack({_ZONES[2]}, [1], {E}, 150)"),
+        _T3: parse_commands(""),
+    })
+    t1_cmds = vcmds[_T1]
+    assert len(t1_cmds) == 2, f"team 1 should have 2 commands, got {len(t1_cmds)}"
+    for vc in t1_cmds:
+        assert vc.valid, f"team 1 cmd invalid: {vc.reason}"
+        assert vc.effective_allies == [_T2], f"team 1 effective_allies wrong: {vc.effective_allies}"
+    assert vcmds[_T2][0].effective_allies == [_T1]
+    print("PASS test_multi_source_coalition_both_cmds_get_allies")
+
+
+def test_multi_source_coalition_troops_sum():
+    """Team 1 (200+100) + team 2 (50) = 350 beats team 3 (100); both source zones depleted."""
+    state = _multi_source_state()
+    E = _ZONES[3]
+    vcmds = RoundValidator(state).validate_all({
+        _T1: parse_commands(
+            f"union_attack({_ZONES[0]}, [2], {E}, 200) "
+            f"union_attack({_ZONES[1]}, [2], {E}, 100)"
+        ),
+        _T2: parse_commands(f"union_attack({_ZONES[2]}, [1], {E}, 50)"),
+        _T3: parse_commands(""),
+    })
+    new_state, _, _ = _execute_round(state, vcmds)
+    owner = new_state.zones[E].owner()
+    assert owner in (_T1, _T2), f"coalition should win E, got {owner}"
+    assert new_state.zones[_ZONES[0]].troops.get(_T1, 0) == 300  # 500 - 200
+    assert new_state.zones[_ZONES[1]].troops.get(_T1, 0) == 400  # 500 - 100
+    print("PASS test_multi_source_coalition_troops_sum")
+
+
+def test_multi_source_beats_larger_solo():
+    """Team 1 (200+150) + team 2 (200) = 550 beats solo team 3 (300)."""
+    state = _multi_source_state()
+    state.zones[_ZONES[3]] = ZoneState(troops={_T3: 300})
+    E = _ZONES[3]
+    vcmds = RoundValidator(state).validate_all({
+        _T1: parse_commands(
+            f"union_attack({_ZONES[0]}, [2], {E}, 200) "
+            f"union_attack({_ZONES[1]}, [2], {E}, 150)"
+        ),
+        _T2: parse_commands(f"union_attack({_ZONES[2]}, [1], {E}, 200)"),
+        _T3: parse_commands(""),
+    })
+    for vc in vcmds[_T1]:
+        assert vc.effective_allies == [_T2], f"effective_allies: {vc.effective_allies}"
+    new_state, _, _ = _execute_round(state, vcmds)
+    assert new_state.zones[E].owner() in (_T1, _T2)
+    print("PASS test_multi_source_beats_larger_solo")

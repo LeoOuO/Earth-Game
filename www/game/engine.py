@@ -324,12 +324,19 @@ class RoundValidator:
                     ua_by_target.setdefault(e, []).append((team, vc.result.command, vc))
 
         for target, group in ua_by_target.items():
-            named: dict[str, set[str]] = {t: set(cmd.allies) for t, cmd, _ in group}
-            troops_map: dict[str, int] = {t: cmd.n for t, cmd, _ in group}
-            vc_map: dict[str, ValidatedCmd] = {t: vc for t, _, vc in group}
+            # A team may have multiple commands to the same target (from different source
+            # zones). Union ally-sets and sum troops across all of a team's commands so
+            # that multi-source coalition attacks are resolved correctly.
+            named: dict[str, set[str]] = {}
+            troops_map: dict[str, int] = {}
+            vcs_per_team: dict[str, list[ValidatedCmd]] = {}
+            for t, cmd, vc in group:
+                named.setdefault(t, set()).update(set(cmd.allies))
+                troops_map[t] = troops_map.get(t, 0) + cmd.n
+                vcs_per_team.setdefault(t, []).append(vc)
 
             assignment: dict[str, str] = {}
-            remaining: set[str] = {t for t, _, _ in group}
+            remaining: set[str] = set(named.keys())
             cid_counter = 0
 
             while remaining:
@@ -352,9 +359,12 @@ class RoundValidator:
             for t, cid in assignment.items():
                 coalition_members.setdefault(cid, []).append(t)
 
-            for t in (t for t, _, _ in group):
+            # Set effective_allies on ALL commands per team (multi-source support)
+            for t, vcs in vcs_per_team.items():
                 cid = assignment[t]
-                vc_map[t].effective_allies = [m for m in coalition_members[cid] if m != t]
+                allies = [m for m in coalition_members[cid] if m != t]
+                for vc in vcs:
+                    vc.effective_allies = allies
 
 
 # ── Coalition helpers ─────────────────────────────────────────────────────────
@@ -616,9 +626,11 @@ def execute_round(
                     garrison[t] = n_ac
     
             # ── Build coalition_troops ─────────────────────────────────────
+            # Use += so a team sending from multiple zones sums into one entry.
             coalition_troops: dict[str, dict[str, int]] = {}
             for a in attacker_list:
-                coalition_troops.setdefault(a["coalition"], {})[a["team"]] = a["n"]
+                ct = coalition_troops.setdefault(a["coalition"], {})
+                ct[a["team"]] = ct.get(a["team"], 0) + a["n"]
     
             # Defender = current zone troops MINUS frozen garrison
             raw_defender = dict(new_state.zones[target].troops)

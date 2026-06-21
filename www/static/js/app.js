@@ -605,6 +605,7 @@ async function executeRound() {
 
 /* Live troop state: updated as boats depart/arrive during animation */
 let _liveZT = null;
+let _parked = {}; // zone → [boat elements] waiting for their zone's battle
 
 function startLiveState() {
   _liveZT = {};
@@ -704,10 +705,14 @@ function _animateSolo(map, ev, callback) {
       boat.querySelector('.boat-n').textContent = '';
       boat.style.transition = 'opacity 0.5s';
       setTimeout(() => { boat.classList.add('fading'); setTimeout(() => { boat.remove(); callback(); }, 500); }, 400);
-    } else {
-      if (ev.kind === 'moving' || ev.kind === 'union') liveAdd(ev.to, ev.team, ev.n);
+    } else if (ev.kind === 'moving' || ev.kind === 'union') {
+      liveAdd(ev.to, ev.team, ev.n);
       boat.classList.add('fading');
       setTimeout(() => { boat.remove(); callback(); }, 350);
+    } else {
+      // attack / union_attack: park at destination until the zone's battle plays
+      (_parked[ev.to] = _parked[ev.to] || []).push(boat);
+      callback();
     }
   }, 880);
 }
@@ -775,10 +780,11 @@ async function _animateGroup(map, boats) {
   await delay(280);
   popup.remove();
 
-  // Phase 3: charge to target
+  // Phase 3: charge to target, then park until the zone's battle plays
   boatEls.forEach(({ el }) => _boatTo(el, tgtPos, 0.5, 'ease-in'));
   await delay(560);
-  boatEls.forEach(({ el }) => { el.classList.add('fading'); setTimeout(() => el.remove(), 350); });
+  const zoneParked = (_parked[target] = _parked[target] || []);
+  boatEls.forEach(({ el }) => zoneParked.push(el));
 }
 
 async function playAnimations(events) {
@@ -788,6 +794,7 @@ async function playAnimations(events) {
   overlay.classList.add('show');
 
   startLiveState();
+  _parked = {};
 
   const moves   = events.filter(e => e.type === 'move');
   const battles = events.filter(e => e.type === 'battle');
@@ -819,6 +826,11 @@ async function playAnimations(events) {
       await delay(300);
     }
   } finally {
+    // Remove any boats that didn't get a battle (e.g. moving-only rounds)
+    for (const boats of Object.values(_parked)) {
+      boats.forEach(el => { el.classList.add('fading'); setTimeout(() => el.remove(), 350); });
+    }
+    _parked = {};
     overlay.classList.remove('show');
   }
 }
@@ -826,6 +838,12 @@ async function playAnimations(events) {
 async function showBattleEffect(map, battle) {
   const center = getIslandCenter(map, battle.zone);
   if (!center) return;
+
+  // Fade out boats that arrived at this zone
+  const arriving = _parked[battle.zone] || [];
+  arriving.forEach(el => { el.classList.add('fading'); setTimeout(() => el.remove(), 350); });
+  delete _parked[battle.zone];
+  if (arriving.length) await delay(200);
 
   // Fight pulse ring
   const ring = document.createElement('div');
