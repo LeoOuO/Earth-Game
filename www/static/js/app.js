@@ -550,7 +550,7 @@ function updateCmdCountHint() {
   if (!gameState || selectedTeam === 'ADMIN') { hint.textContent = ''; return; }
   const cmds = validatedCommands[selectedTeam] || [];
   const validOps = cmds.filter(c => c.valid && c.op !== 'set').length;
-  hint.textContent = `目前 ${validOps}/3 個有效操作`;
+  hint.textContent = `目前 ${validOps}/5 個有效操作`;
 }
 
 /* ── Submit commands ─────────────────────────────────────────────────────── */
@@ -602,83 +602,225 @@ async function executeRound() {
 }
 
 /* ── Animations (real mode) ─────────────────────────────────────────────── */
+
+/* Live troop state: updated as boats depart/arrive during animation */
+let _liveZT = null;
+
+function startLiveState() {
+  _liveZT = {};
+  for (const [zone, zdata] of Object.entries(gameState.zones || {})) {
+    _liveZT[zone] = {...(zdata.troops || {})};
+  }
+}
+
+function liveDeduct(zone, team, n) {
+  if (!_liveZT) return;
+  if (!_liveZT[zone]) _liveZT[zone] = {};
+  _liveZT[zone][team] = Math.max(0, (_liveZT[zone][team] || 0) - n);
+  _refreshRI(zone);
+}
+
+function liveAdd(zone, team, n) {
+  if (!_liveZT) return;
+  if (!_liveZT[zone]) _liveZT[zone] = {};
+  _liveZT[zone][team] = (_liveZT[zone][team] || 0) + n;
+  _refreshRI(zone);
+}
+
+function _refreshRI(zone) {
+  const code = ISLAND_CODES[zone];
+  if (!code) return;
+  const el = document.getElementById(`ri-${code}`);
+  if (!el) return;
+  const troops = _liveZT[zone] || {};
+  const entries = Object.entries(troops).filter(([,n]) => n > 0).sort((a,b) => b[1]-a[1]);
+  const total = entries.reduce((s,[,n]) => s + n, 0);
+  const riTroops = el.querySelector('.ri-troops');
+  if (riTroops) riTroops.textContent = total > 0 ? total + '⚔' : '';
+  const riBreakdown = el.querySelector('.ri-breakdown');
+  if (riBreakdown) {
+    riBreakdown.innerHTML = entries.map(([t,n]) =>
+      `<span style="color:${TEAM_COLORS[t]||'#888'}">${t}:${n}</span>`
+    ).join(' ');
+  }
+}
+
+/* Convert zone name to pixel center position within the map container */
+function getIslandCenter(map, zone) {
+  const pos = ISLAND_POSITIONS[zone];
+  if (!pos) return null;
+  return {
+    x: map.offsetWidth  * pos.l / 100,
+    y: map.offsetHeight * pos.t / 100,
+  };
+}
+
+/* Boat element helpers */
+const BW = 17, BH = 20; // half-dimensions for center-offset positioning
+
+function _boatEmoji(kind) {
+  if (kind === 'penalty') return '💣';
+  if (kind === 'attack' || kind === 'union_attack') return '⚔️';
+  if (kind === 'union') return '🛡';
+  return '⛵';
+}
+
+function _makeBoat(map, ev, pos) {
+  const color = TEAM_COLORS[ev.team] || '#888';
+  const boat = document.createElement('div');
+  boat.className = 'boat';
+  boat.style.cssText = `left:${pos.x-BW}px;top:${pos.y-BH}px;background:${color}22;border-color:${color};color:${color};transition:none;`;
+  boat.innerHTML = `<div class="boat-icon">${_boatEmoji(ev.kind)}</div><div class="boat-n">${ev.n}</div>`;
+  map.appendChild(boat);
+  return boat;
+}
+
+function _boatTo(boat, pos, dur = 0.8, ease = 'ease-in-out') {
+  boat.style.transition = `left ${dur}s ${ease}, top ${dur}s ${ease}, opacity 0.3s`;
+  boat.style.left = `${pos.x - BW}px`;
+  boat.style.top  = `${pos.y - BH}px`;
+}
+
+/* Compute coalition ID from event (no backend change needed) */
+function _coalitionId(ev) {
+  if (!ev.allies || !ev.allies.length) return null;
+  return [...ev.allies, ev.team].sort().join('_') + '__' + ev.to;
+}
+
+/* Single boat animation — deducts source immediately, optionally adds to dest */
+function _animateSolo(map, ev, callback) {
+  const src = getIslandCenter(map, ev.from);
+  const tgt = getIslandCenter(map, ev.to);
+  if (!src || !tgt) { callback(); return; }
+
+  liveDeduct(ev.from, ev.team, ev.n);
+  const boat = _makeBoat(map, ev, src);
+
+  requestAnimationFrame(() => requestAnimationFrame(() => _boatTo(boat, tgt)));
+
+  setTimeout(() => {
+    if (ev.kind === 'penalty') {
+      boat.querySelector('.boat-icon').textContent = '💀';
+      boat.querySelector('.boat-n').textContent = '';
+      boat.style.transition = 'opacity 0.5s';
+      setTimeout(() => { boat.classList.add('fading'); setTimeout(() => { boat.remove(); callback(); }, 500); }, 400);
+    } else {
+      if (ev.kind === 'moving' || ev.kind === 'union') liveAdd(ev.to, ev.team, ev.n);
+      boat.classList.add('fading');
+      setTimeout(() => { boat.remove(); callback(); }, 350);
+    }
+  }, 880);
+}
+
+/* union_attack group animation: rally → sum popup → charge */
+async function _animateGroup(map, boats) {
+  if (boats.length === 1) {
+    return new Promise(r => _animateSolo(map, boats[0], r));
+  }
+
+  const target = boats[0].to;
+  const tgtPos = getIslandCenter(map, target);
+  if (!tgtPos) return;
+
+  const srcPosArr = boats.map(b => getIslandCenter(map, b.from)).filter(Boolean);
+  const avgSrc = srcPosArr.reduce(
+    (a, p) => ({x: a.x + p.x / srcPosArr.length, y: a.y + p.y / srcPosArr.length}),
+    {x: 0, y: 0}
+  );
+
+  const dx = tgtPos.x - avgSrc.x, dy = tgtPos.y - avgSrc.y;
+  const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+  const nx = dx/dist, ny = dy/dist;
+  const px = -ny,    py =  nx;  // perpendicular
+
+  const RALLY_OFFSET = Math.min(68, dist * 0.28);
+  const rally = { x: tgtPos.x - nx * RALLY_OFFSET, y: tgtPos.y - ny * RALLY_OFFSET };
+
+  // Phase 1: deduct sources, move boats to staggered rally positions
+  const SPACING = 36;
+  const boatEls = [];
+  boats.forEach((ev, i) => {
+    const src = getIslandCenter(map, ev.from);
+    if (!src) return;
+
+    liveDeduct(ev.from, ev.team, ev.n);
+
+    const offset = (i - (boats.length - 1) / 2) * SPACING;
+    const stagePos = { x: rally.x + px * offset, y: rally.y + py * offset };
+    const el = _makeBoat(map, ev, src);
+
+    setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() =>
+      _boatTo(el, stagePos)
+    )), i * 80);
+
+    boatEls.push({ el, ev, stagePos });
+  });
+
+  await delay(920 + (boats.length - 1) * 80);
+
+  // Phase 2: sum popup
+  const totalN = boats.reduce((s, b) => s + b.n, 0);
+  const parts = boats.map(b =>
+    `<span style="color:${TEAM_COLORS[b.team]||'#888'}">+${b.n}</span>`
+  ).join(' ');
+  const popup = document.createElement('div');
+  popup.className = 'union-sum-popup';
+  popup.innerHTML = `${parts}<span class="sum-equals">= ${totalN}</span>`;
+  popup.style.cssText = `left:${rally.x}px;top:${rally.y}px;`;
+  map.appendChild(popup);
+  await delay(40);
+  popup.classList.add('show');
+  await delay(950);
+  popup.classList.remove('show');
+  await delay(280);
+  popup.remove();
+
+  // Phase 3: charge to target
+  boatEls.forEach(({ el }) => _boatTo(el, tgtPos, 0.5, 'ease-in'));
+  await delay(560);
+  boatEls.forEach(({ el }) => { el.classList.add('fading'); setTimeout(() => el.remove(), 350); });
+}
+
 async function playAnimations(events) {
   const map = document.getElementById('real-map');
   if (!map) return;
   const overlay = document.getElementById('anim-overlay');
   overlay.classList.add('show');
 
-  const moves = events.filter(e => e.type === 'move');
+  startLiveState();
+
+  const moves   = events.filter(e => e.type === 'move');
   const battles = events.filter(e => e.type === 'battle');
 
-  // Animate all moves in parallel
-  if (moves.length > 0) {
-    await Promise.all(moves.map((ev, i) => new Promise(resolve => {
-      setTimeout(() => animateBoat(map, ev, resolve), i * 120);
-    })));
-    // Small pause after all boats land
-    await delay(200);
-  }
-
-  // Sequential battle effects
-  for (const battle of battles) {
-    await showBattleEffect(map, battle);
-    await delay(300);
-  }
-
-  overlay.classList.remove('show');
-}
-
-function getIslandCenter(map, zoneName) {
-  const pos = ISLAND_POSITIONS[zoneName];
-  if (!pos) return null;
-  const rect = map.getBoundingClientRect();
-  return {
-    x: (pos.l / 100) * rect.width,
-    y: (pos.t / 100) * rect.height,
-  };
-}
-
-function animateBoat(map, event, callback) {
-  const src = getIslandCenter(map, event.from);
-  const tgt = getIslandCenter(map, event.to);
-  if (!src || !tgt) { callback(); return; }
-
-  const isPenalty = event.kind === 'penalty';
-  const color = TEAM_COLORS[event.team] || '#888';
-  const emoji = isPenalty ? '⚔️' : (event.kind === 'moving' ? '⛵' : (event.kind === 'attack' ? '⚔️' : '🛡'));
-  const boat = document.createElement('div');
-  boat.className = 'boat';
-  boat.style.cssText = `
-    left: ${src.x - 13}px;
-    top: ${src.y - 13}px;
-    background: ${color}33;
-    border-color: ${color};
-    color: ${color};
-    transition: none;
-  `;
-  boat.textContent = emoji;
-  map.appendChild(boat);
-
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      boat.style.transition = 'left 0.8s ease-in-out, top 0.8s ease-in-out, opacity 0.3s';
-      boat.style.left = `${tgt.x - 13}px`;
-      boat.style.top  = `${tgt.y - 13}px`;
-    });
-  });
-
-  setTimeout(() => {
-    if (isPenalty) {
-      // Show skull at target, then fade
-      boat.textContent = '💀';
-      boat.style.transition = 'opacity 0.5s';
-      setTimeout(() => { boat.classList.add('fading'); setTimeout(() => { boat.remove(); callback(); }, 500); }, 400);
+  // Separate union_attack coalitions (≥2 boats) from solo moves
+  const groups = {};
+  const solo   = [];
+  for (const ev of moves) {
+    const cid = _coalitionId(ev);
+    if (cid) {
+      (groups[cid] = groups[cid] || []).push(ev);
     } else {
-      boat.classList.add('fading');
-      setTimeout(() => { boat.remove(); callback(); }, 350);
+      solo.push(ev);
     }
-  }, 850);
+  }
+
+  // Run solo moves (staggered) + coalition groups in parallel
+  try {
+    const soloPromises = solo.map((ev, i) =>
+      new Promise(r => setTimeout(() => _animateSolo(map, ev, r), i * 100))
+    );
+    const groupPromises = Object.values(groups).map(g => _animateGroup(map, g));
+
+    await Promise.all([...soloPromises, ...groupPromises]);
+    await delay(200);
+
+    for (const battle of battles) {
+      await showBattleEffect(map, battle);
+      await delay(300);
+    }
+  } finally {
+    overlay.classList.remove('show');
+  }
 }
 
 async function showBattleEffect(map, battle) {
