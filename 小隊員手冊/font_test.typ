@@ -1,7 +1,7 @@
 #set text(font: ("PingFang TC", "Heiti TC"), size: 12pt, lang: "zh", region: "TW")
 #set page(paper: "a4", margin: 2cm)
 
-= 椰島霸主測試
+= 椰島爭霸測試
 
 你好，這是測試頁。COCONUT WARS（COW）操作指令：`moving(S, E, n)`
 
