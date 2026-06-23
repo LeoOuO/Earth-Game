@@ -24,7 +24,7 @@ const TERRITORY_POWER = {
 const SPECIAL_ZONES = [
   {name:"中立小島", note:"中立，兵力×1.5/回合", icon:"🏝", code:"NEU"},
   {name:"迷霧島",   note:"R1：1000兵力/回合（第2回合起）", icon:"🌫", code:"FOG"},
-  {name:"金錢島",   note:"R2：1000國力/回合（第2回合起）", icon:"💰", code:"GOLD"},
+  {name:"金錢島",   note:"R2：1000椰子/回合（第2回合起）", icon:"💰", code:"GOLD"},
   {name:"漩渦",     note:"R3：依人數決定（第2回合起）",    icon:"🌀", code:"VORT"},
 ];
 
@@ -892,7 +892,7 @@ function showExecModal(log) {
     const div = document.createElement('div');
     let cls = '';
     if (line.startsWith('[戰鬥]')) cls = 'log-battle';
-    else if (line.startsWith('[國力]')) cls = 'log-power';
+    else if (line.startsWith('[椰子]')) cls = 'log-power';
     else if (line.startsWith('[中立]') || line.startsWith('[救濟]')) cls = 'log-neutral';
     else if (line.startsWith('[迷霧') || line.startsWith('[金錢') || line.startsWith('[漩渦')) cls = 'log-resource';
     else if (line.startsWith('[衝突') || line.startsWith('[懲罰')) cls = 'log-penalty';
