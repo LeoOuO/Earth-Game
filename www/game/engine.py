@@ -123,7 +123,15 @@ class RoundValidator:
         state = self.state
 
         if cmd.op == "set":
-            vc.valid = True  # admin commands always syntactically valid here
+            if team != "ADMIN":
+                vc.valid = False
+                vc.reason = "set() 操作僅限管理員"
+                return vc
+            if cmd.nation not in ("\x00", "") and cmd.nation not in state.teams:
+                vc.valid = False
+                vc.reason = f"未知隊伍 {cmd.nation}（forced_owner 必須為有效隊伍）"
+                return vc
+            vc.valid = True
             return vc
 
         # Check source belongs to team (or is neutral/resource for moving)
@@ -200,6 +208,10 @@ class RoundValidator:
             is_p_territory = self._team_owns_territory(cmd.nation, cmd.target)
             is_our_territory = self._team_owns_territory(team, cmd.target)
             if is_our_territory:
+                if cmd.n <= 0:
+                    vc.valid = False
+                    vc.reason = "兵力數必須為正整數（1以上）"
+                    return vc
                 # Accepting mode: we are agreeing to host P's troops. No troop cost.
                 vc.union_role = "accepting"
             elif is_p_territory:
@@ -424,45 +436,11 @@ def execute_round(
         for zone, zs in state.zones.items()
     }
 
-    # ── Phase 0: Admin set() ───────────────────────────────────────────────
-    for team, vlist in vcmds.items():
-        for vc in vlist:
-            if not vc.valid:
-                continue
-            cmd = vc.result.command
-            if cmd.op == "set":
-                zone = cmd.source
-                new_troops: dict[str, int] = {}
-                for t, n in cmd.allies:  # (team, troops) pairs
-                    if n > 0:
-                        new_troops[t] = n
-                # Determine forced_owner:
-                #   cmd.nation == "\x00"  → K not provided, keep existing forced_owner
-                #   cmd.nation == ""      → K=0, clear forced_owner
-                #   cmd.nation == "1"-"10"→ set forced_owner to that team
-                existing_fo = new_state.zones[zone].forced_owner
-                if cmd.nation == "\x00":
-                    fo = existing_fo  # unchanged
-                elif cmd.nation == "":
-                    fo = None  # clear
-                else:
-                    fo = cmd.nation  # set
-
-                new_state.zones[zone] = ZoneState(troops=new_troops, forced_owner=fo)
-
-                parts = []
-                if new_troops:
-                    parts.append(", ".join(f"{t}:{n}" for t, n in new_troops.items()))
-                else:
-                    parts.append("（清空）")
-                if fo:
-                    parts.append(f"佔領國={fo}")
-                elif cmd.nation == "":
-                    parts.append("佔領國已清除")
-                log.append(f"[管理員] 設定 {zone}：{'  '.join(parts)}")
-
     # Admin-only round: ADMIN has valid set commands AND no non-ADMIN team submitted anything.
     # Empty round (no commands at all) → normal round advance, not intermediate.
+    # Determined before Phase 1 so battles are correctly skipped in admin-only rounds.
+    # Phase 0 (admin set()) is deferred to after Phase 5 so team commands always execute
+    # against the unmodified round-start state — preventing silent troop drops.
     _has_admin_cmds = any(vc.valid for vc in vcmds.get("ADMIN", []))
     _has_non_admin_input = any(
         len(vlist) > 0
@@ -484,7 +462,7 @@ def execute_round(
 
     # Track zones whose troops are fully invalidated (conflict penalty)
     penalty_zones: dict[str, set[str]] = {}  # zone → set of teams
-    conflict_penalized_teams: set[str] = set()  # teams penalized this round (no ×1.5)
+    conflict_penalized_amounts: dict[str, int] = {}  # team → troops forced to neutral (skip ×1.5)
 
     # First pass: find penalty zones (already marked invalid due to conflict)
     for team, vlist in vcmds.items():
@@ -501,7 +479,7 @@ def execute_round(
         for team in teams:
             amount = state.zones[zone].troops.get(team, 0)
             if amount > 0:
-                conflict_penalized_teams.add(team)
+                conflict_penalized_amounts[team] = conflict_penalized_amounts.get(team, 0) + amount
                 delta_out.setdefault(zone, {})[team] = \
                     delta_out.get(zone, {}).get(team, 0) + amount
                 # Move to neutral island
@@ -618,10 +596,13 @@ def execute_round(
             # ── Garrison betrayal detection ────────────────────────────────
             # If an attacking team already has troops at the target, those troops
             # are frozen (excluded from both attack and defence calculations).
+            # Use pre-round state: §6.4 says "已有駐守兵力（先前 union 或戰役遺留）".
+            # Troops that arrive at target via moving() in the SAME round are not garrison;
+            # they arrive as fresh defenders (§7.6), not betrayal troops.
             garrison: dict[str, int] = {}  # team → n_Ac (frozen troops at target)
             for a in attacker_list:
                 t = a["team"]
-                n_ac = new_state.zones[target].troops.get(t, 0)
+                n_ac = state.zones[target].troops.get(t, 0)
                 if n_ac > 0:
                     garrison[t] = n_ac
     
@@ -693,7 +674,9 @@ def execute_round(
             if winner_cid is None:
                 # All attackers eliminated; defender (if any) survives unchanged
                 if defender_cid:
-                    new_state.zones[target] = ZoneState(troops=dict(defender_troops))
+                    new_zone = ZoneState(troops=dict(defender_troops))
+                    new_zone.forced_owner = zone_start_owners.get(target)
+                    new_state.zones[target] = new_zone
                 else:
                     new_state.zones[target] = ZoneState(troops={})
                 # Losing garrison → add n_Ac to loser pool for winner (no winner → lost)
@@ -704,11 +687,6 @@ def execute_round(
                 continue
     
             winner_total = sum(active[winner_cid].values())
-
-            # Loser total from remaining active (not the eliminated ones)
-            loser_total = sum(
-                sum(tm.values()) for c, tm in active.items() if c != winner_cid
-            )
 
             # ── Garrison fate: split into winning / losing ─────────────────
             winning_garrison = {
@@ -797,20 +775,36 @@ def execute_round(
             z_state = new_state.zones[zone]
             total_t = z_state.total()
             if total_t == 0:
+                # 0 兵力但有佔領者（forced_owner）仍產出完整國力
+                owner = z_state.owner()
+                if owner:
+                    new_state.national_power[owner] = \
+                        new_state.national_power.get(owner, 0) + x
+                    log.append(f"[國力] {zone}({x})：{owner} +{x}（0兵力領主）")
                 continue
 
-            if len(z_state.troops) == 1:
-                team = next(iter(z_state.troops))
+            owner = z_state.owner()
+
+            # Include forced_owner even if they have 0 troops (cleaned from dict).
+            # Per §4.2, the occupying lord always receives ½X as their base share.
+            working_troops = dict(z_state.troops)
+            if owner and owner not in working_troops:
+                working_troops[owner] = 0
+
+            if len(working_troops) == 1:
+                team = next(iter(working_troops))
                 new_state.national_power[team] = \
                     new_state.national_power.get(team, 0) + x
                 log.append(f"[國力] {zone}({x})：{team} +{x}")
             else:
-                owner = z_state.owner()
                 half_x = x / 2
                 gained = {}
-                for team, troops in z_state.troops.items():
+                for team, troops in working_troops.items():
                     prop = troops / total_t
-                    if team == owner:
+                    if owner is None:
+                        # No forced owner: distribute full X proportionally
+                        share = math.floor(x * prop)
+                    elif team == owner:
                         share = math.floor(half_x + half_x * prop)
                     else:
                         share = math.floor(half_x * prop)
@@ -829,12 +823,20 @@ def execute_round(
         for team in list(neutral.troops.keys()):
             n = neutral.troops.get(team, 0)
             if n > 0:
-                if team in conflict_penalized_teams:
+                penalized_n = conflict_penalized_amounts.get(team, 0)
+                legit_n = max(0, n - penalized_n)
+                if legit_n == 0:
                     log.append(f"[中立] {team} 因衝突懲罰，本回合跳過中立小島 ×1.5")
                 else:
-                    new_n = math.floor(n * 1.5)
+                    new_n = math.floor(legit_n * 1.5) + penalized_n
                     neutral.troops[team] = new_n
-                    log.append(f"[中立] {team} 兵力 {n} × 1.5 = {new_n}")
+                    if penalized_n > 0:
+                        log.append(
+                            f"[中立] {team} 兵力（{penalized_n} 衝突懲罰部分跳過，"
+                            f"{legit_n} × 1.5）= {new_n}"
+                        )
+                    else:
+                        log.append(f"[中立] {team} 兵力 {n} × 1.5 = {new_n}")
 
         # 0-troop relief (teams with no troops anywhere get 1000)
         for team in new_state.teams:
@@ -867,11 +869,52 @@ def execute_round(
 
     # Persist ownership: set forced_owner for zones not yet tracked (e.g. initial round)
     # so that 0-troop owners are recognized as nominal defenders in subsequent rounds.
+    # BUG-17 fix: this block must run BEFORE Phase 0 admin set() so that an admin
+    # set(K="") clearing forced_owner is not silently overridden by the persist block.
     for zone, zs in new_state.zones.items():
         if zs.forced_owner is None and zs.troops:
             by_t = sorted(zs.troops.items(), key=lambda kv: kv[1], reverse=True)
             if len(by_t) == 1 or by_t[0][1] > by_t[1][1]:
                 new_state.zones[zone].forced_owner = by_t[0][0]
+
+    # ── Phase 0: Admin set() (deferred — runs after all battles so team commands
+    #    are never silently dropped due to admin troop-count changes mid-round) ──
+    # BUG-17 fix: moved to after persist-ownership block so admin set(K="") can
+    # override any ownership that was auto-assigned by the persist block above.
+    for team, vlist in vcmds.items():
+        for vc in vlist:
+            if not vc.valid:
+                continue
+            cmd = vc.result.command
+            if cmd.op == "set":
+                zone = cmd.source
+                new_troops: dict[str, int] = {}
+                for t, n in cmd.allies:  # (team, troops) pairs
+                    if n > 0:
+                        new_troops[t] = n
+                # cmd.nation == "\x00"  → K not provided, keep existing forced_owner
+                # cmd.nation == ""      → K=0, clear forced_owner
+                # cmd.nation == "1"-"10"→ set forced_owner to that team
+                existing_fo = new_state.zones[zone].forced_owner
+                if cmd.nation == "\x00":
+                    fo = existing_fo  # unchanged
+                elif cmd.nation == "":
+                    fo = None  # clear
+                else:
+                    fo = cmd.nation  # set
+
+                new_state.zones[zone] = ZoneState(troops=new_troops, forced_owner=fo)
+
+                parts = []
+                if new_troops:
+                    parts.append(", ".join(f"{t}:{n}" for t, n in new_troops.items()))
+                else:
+                    parts.append("（清空）")
+                if fo:
+                    parts.append(f"佔領國={fo}")
+                elif cmd.nation == "":
+                    parts.append("佔領國已清除")
+                log.append(f"[管理員] 設定 {zone}：{'  '.join(parts)}")
 
     # Remove all 0-troop entries (garrison 0 = abandon; owner 0 preserved via forced_owner)
     for zs in new_state.zones.values():

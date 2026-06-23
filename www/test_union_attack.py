@@ -11,7 +11,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from game.engine import _find_all_cliques, RoundValidator
-from game.state import GameState, ZoneState
+from game.state import GameState, ZoneState, NEUTRAL_ISLAND
 from game.parser import parse_commands
 
 
@@ -377,3 +377,131 @@ def test_multi_source_beats_larger_solo():
     new_state, _, _ = _execute_round(state, vcmds)
     assert new_state.zones[E].owner() in (_T1, _T2)
     print("PASS test_multi_source_beats_larger_solo")
+
+
+# ── Bug-regression tests ──────────────────────────────────────────────────────
+
+def test_conflict_penalty_only_skips_conflict_troops():
+    """
+    Bug 1 regression: conflict penalty should only block ×1.5 for the
+    conflict-forced portion, not for legitimate moving → neutral in same round.
+
+    Setup:
+      T1 has 500 troops in zone S and 200 in zone Z.
+      T1 submits moving(S→neutral, 300) AND moving(S→E, 300) → conflict at S.
+      T1 also submits moving(Z→neutral, 100) → valid.
+
+    Expected:
+      - 500 forced-to-neutral from S: NO ×1.5
+      - 100 legit-to-neutral from Z: gets ×1.5 → 150
+      - T1 total at neutral = 650
+    """
+    S = _ZONES[0]
+    Z = _ZONES[1]
+    E = _ZONES[2]
+    state = GameState(teams=[_T1, _T2])
+    state.zones[S] = ZoneState(troops={_T1: 500})
+    state.zones[Z] = ZoneState(troops={_T1: 200})
+    state.zones[E] = ZoneState(troops={_T2: 100})
+
+    parsed = {
+        _T1: parse_commands(
+            f"moving({S}, {NEUTRAL_ISLAND}, 300) "
+            f"attack({S}, {E}, 300) "
+            f"moving({Z}, {NEUTRAL_ISLAND}, 100)"
+        ),
+        _T2: parse_commands(""),
+    }
+    vcmds = RoundValidator(state).validate_all(parsed)
+    new_state, _, _ = _execute_round(state, vcmds)
+
+    t1_neutral = new_state.zones[NEUTRAL_ISLAND].troops.get(_T1, 0)
+    assert t1_neutral == 650, (
+        f"expected 650 (500 penalty + floor(100×1.5)), got {t1_neutral}"
+    )
+    print("PASS test_conflict_penalty_only_skips_conflict_troops")
+
+
+def test_zero_troop_owner_retains_zone_when_attackers_eliminate():
+    """
+    Bug 2 regression: 0-troop nominal defender must keep forced_owner when
+    all attackers mutually eliminate each other.
+
+    Setup:
+      T1 is forced_owner of E (no troops — moved out last round).
+      T2 attacks E with 200 (solo), T3 attacks E with 200 (solo).
+      T2 and T3 tie (equal troops, equal coalition size) → mutual elimination.
+
+    Expected:
+      E.owner() == T1 (still T1's territory after the round)
+    """
+    S2 = _ZONES[0]
+    S3 = _ZONES[1]
+    E  = _ZONES[2]
+    T1_home = _ZONES[3]
+    state = GameState(teams=[_T1, _T2, _T3])
+    state.zones[E] = ZoneState(troops={})
+    state.zones[E].forced_owner = _T1
+    state.zones[T1_home] = ZoneState(troops={_T1: 500})
+    state.zones[S2] = ZoneState(troops={_T2: 500})
+    state.zones[S3] = ZoneState(troops={_T3: 500})
+
+    parsed = {
+        _T1: parse_commands(""),
+        _T2: parse_commands(f"attack({S2}, {E}, 200)"),
+        _T3: parse_commands(f"attack({S3}, {E}, 200)"),
+    }
+    vcmds = RoundValidator(state).validate_all(parsed)
+    new_state, log, _ = _execute_round(state, vcmds)
+
+    owner = new_state.zones[E].owner()
+    assert owner == _T1, (
+        f"expected E still owned by T1 after mutual elimination, got {owner!r}.\n"
+        f"Log: {log}"
+    )
+    print("PASS test_zero_troop_owner_retains_zone_when_attackers_eliminate")
+
+
+def test_same_round_move_not_counted_as_garrison():
+    """
+    Bug regression (§6.4): garrison betrayal only applies to pre-round troops.
+    Troops that ARRIVE at target via moving() in the same round are NOT garrison.
+
+    Setup:
+      T1 is minority at E (30 pre-existing troops), T2 is owner (200 troops).
+      T1: moving(Z, E, 50) — adds 50 to E this round
+      T1: attack(S, E, 100) — attacks E (T1 is minority, not owner → valid)
+      Expected:
+        - garrison = 30 (pre-round only, not 30+50=80)
+        - T1's 50 newly moved troops join the defenders at E
+        - T1 attacks with 100 vs defenders = (200 - no change) + 50 fresh = 250
+        - T1 loses (100 < 250); T1's garrison (30) is lost to the loser pool
+    """
+    E = _ZONES[0]
+    S = _ZONES[1]
+    Z = _ZONES[2]
+    state = GameState(teams=[_T1, _T2])
+    state.zones[E] = ZoneState(troops={_T1: 30, _T2: 200})
+    state.zones[E].forced_owner = _T2
+    state.zones[S] = ZoneState(troops={_T1: 200})
+    state.zones[Z] = ZoneState(troops={_T1: 200})
+
+    parsed = {
+        _T1: parse_commands(f"moving({Z}, {E}, 50) attack({S}, {E}, 100)"),
+        _T2: parse_commands(""),
+    }
+    vcmds = RoundValidator(state).validate_all(parsed)
+    for vc in vcmds[_T1]:
+        assert vc.valid, f"cmd invalid: {vc.reason}"
+
+    new_state, log, _ = _execute_round(state, vcmds)
+
+    # T2 should still own E (T1 lost with 100 vs 250)
+    assert new_state.zones[E].owner() == _T2, (
+        f"T2 should still own E, got {new_state.zones[E].owner()}"
+    )
+    # Garrison should be only 30 (pre-round), not 80
+    log_txt = "\n".join(log)
+    assert "n_Ac=30" in log_txt, f"garrison should be 30, log:\n{log_txt}"
+    assert "n_Ac=80" not in log_txt, f"garrison should NOT be 80, log:\n{log_txt}"
+    print("PASS test_same_round_move_not_counted_as_garrison")
