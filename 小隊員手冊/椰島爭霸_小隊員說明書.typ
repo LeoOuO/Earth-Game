@@ -296,71 +296,89 @@
 
 #v(0.4em)
 
-// Flowchart using boxes and arrows
-#let flow-box(label, sublabel: none, fill: c-green, text-color: white) = {
-  block(
-    fill: fill,
-    stroke: 1pt + c-green,
-    radius: 6pt,
-    inset: (x: 10pt, y: 8pt),
-    {
-      set align(center)
-      set text(fill: text-color, weight: "bold", size: 10pt)
-      label
-      if sublabel != none {
-        set text(weight: "regular", size: 8.5pt)
-        linebreak()
-        sublabel
-      }
-    },
-  )
-}
-
-#let arrow = align(center)[
-  #text(size: 14pt, fill: c-green)[↓]
+// ① 開始 + 分組 — 全寬綠色橫條
+#block(width: 100%, fill: c-green, radius: 8pt, inset: (x: 16pt, y: 11pt))[
+  #set align(center)
+  #text(fill: white, weight: "bold", size: 11pt)[
+    13:00　活動開始
+    #h(0.8em)#text(fill: rgb("#A5D6A7"), size: 13pt)[→]#h(0.8em)
+    分組出發（1a ／ 1b 兩組）
+  ]
 ]
 
+#v(0.35em)
+#align(center)[#text(size: 16pt, fill: c-green)[↓]]
+#v(0.08em)
+#align(center)[#text(size: 7.5pt, fill: rgb("#888888"))[13:00–15:10　探索與市集同時進行]]
+#v(0.22em)
+
+// ② 平行階段：自由探索 ‖ 中央市集（header + body 卡片）
 #grid(
-  columns: (1fr, auto, 1fr, auto, 1fr),
-  column-gutter: 4pt,
-  align: center + horizon,
-  flow-box[13:00 \ 活動開始],
-  text(size: 14pt, fill: c-green)[→],
-  flow-box[分組出發 \ A1 ／ A2],
-  text(size: 14pt, fill: c-green)[→],
-  flow-box[自由探索 \ 12 個椰島],
+  columns: (1fr, 1fr),
+  column-gutter: 10pt,
+  align: top,
+  // 左欄：探索 + 插旗
+  block(width: 100%, radius: 6pt, clip: true, stroke: 1.5pt + c-green, inset: 0pt)[
+    #block(width: 100%, fill: rgb("#1B5E20"), inset: (x: 10pt, y: 8pt))[
+      #set align(center)
+      #text(fill: white, weight: "bold", size: 10pt)[自由探索 12 座椰島]
+    ]
+    #block(width: 100%, fill: c-green, inset: (x: 10pt, y: 10pt))[
+      #set align(center)
+      #text(fill: rgb("#C8E6C9"), size: 8.5pt)[通關關卡，獲取旗子 & 海石]
+      #v(0.45em)
+      #text(fill: rgb("#A5D6A7"), weight: "bold")[↓　通關後]
+      #v(0.2em)
+      #block(width: 100%, fill: rgb("#1B5E20"), radius: 4pt, inset: (x: 8pt, y: 7pt))[
+        #set align(center)
+        #text(fill: white, weight: "bold", size: 9.5pt)[插旗嘗試佔領領地]
+      ]
+    ]
+  ],
+  // 右欄：中央市集
+  block(width: 100%, radius: 6pt, clip: true, stroke: 1.5pt + c-green, inset: 0pt)[
+    #block(width: 100%, fill: c-green-light, inset: (x: 10pt, y: 8pt))[
+      #set align(center)
+      #text(fill: c-green, weight: "bold", size: 10pt)[中央市集（103）]
+    ]
+    #block(width: 100%, fill: white, inset: (x: 10pt, y: 11pt))[
+      #set align(center)
+      #block(
+        fill: c-green-light, stroke: 0.5pt + c-green-mid,
+        radius: 4pt, inset: (x: 10pt, y: 4pt),
+      )[
+        #text(fill: c-green, weight: "bold", size: 8.5pt)[U1 後開放]
+      ]
+      #v(0.55em)
+      #text(fill: c-black, size: 8.5pt)[用海石購買道具卡 & 旗子]
+    ]
+  ],
 )
 
-#v(0.5em)
-#align(center)[#text(size: 14pt, fill: c-green)[↓]]
-#v(0.3em)
-
-#grid(
-  columns: (1fr, auto, 1fr, auto, 1fr),
-  column-gutter: 4pt,
-  align: center + horizon,
-  flow-box(fill: c-green-light, text-color: c-black)[插旗佔領 \ 每次通關後],
-  text(size: 14pt, fill: c-green)[⇄],
-  flow-box(fill: c-green-light, text-color: c-black)[中央市集 \ 購買道具卡],
-  text(size: 14pt, fill: c-green)[←],
-  flow-box(fill: c-green-light, text-color: c-black)[世界史更新 \ U1 → U2 → U3 → U4],
-)
-
-#v(0.5em)
-#align(center)[#text(size: 14pt, fill: c-green)[↓]]
-#v(0.3em)
-
+#v(0.28em)
 #align(center)[
-  #block(
-    fill: c-warn,
-    stroke: 1pt + c-warn,
-    radius: 6pt,
-    inset: (x: 16pt, y: 10pt),
-    {
-      set text(fill: white, weight: "bold", size: 11pt)
-      [15:10　COCONUT WARS（COW）最終決戰]
-    },
-  )
+  #text(size: 7.5pt, fill: rgb("#888888"))[每隔 ~25 分鐘]
+  #linebreak()
+  #text(size: 16pt, fill: c-green)[↑↓]
+]
+#v(0.12em)
+
+// ③ 世界史更新 — 全寬淺綠橫條
+#block(width: 100%, fill: c-row-alt, stroke: 1.5pt + c-green-mid, radius: 8pt, inset: (x: 16pt, y: 11pt))[
+  #set align(center)
+  #text(fill: c-green, weight: "bold", size: 11pt)[世界史更新（U1 → U2 → U3 → U4）]
+  #v(0.1em)
+  #text(fill: c-black, size: 8.5pt)[結算一次領地兵力 & 觸發特殊事件　（共 4 次）]
+]
+
+#v(0.35em)
+#align(center)[#text(size: 16pt, fill: c-warn)[↓]]
+#v(0.18em)
+
+// ④ COW — 全寬橘色橫條
+#block(width: 100%, fill: c-warn, radius: 8pt, inset: (x: 16pt, y: 12pt))[
+  #set align(center)
+  #text(fill: white, weight: "bold", size: 12pt)[15:10　COCONUT WARS（COW）最終決戰]
 ]
 
 #divider
