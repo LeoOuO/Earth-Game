@@ -38,27 +38,22 @@ const ISLAND_CODES = {
 
 /* Island positions on real-mode sea map (% of container width/height) */
 const ISLAND_POSITIONS = {
-  // Resource row (top)
-  "迷霧島":   {l:20, t:9},
-  "金錢島":   {l:50, t:9},
-  "漩渦":     {l:79, t:9},
-  // Main islands row 1
-  "人類王國": {l:8,  t:27},
-  "精靈森域": {l:32, t:21},
-  "龍族火山": {l:60, t:27},
-  "獸人荒原": {l:85, t:21},
-  // Main islands row 2
-  "巨人山丘": {l:16, t:51},
-  "侏儒劇場": {l:42, t:46},
-  "狐族賭館": {l:67, t:52},
-  "機械王國": {l:87, t:46},
-  // Main islands row 3
-  "布丁狗族": {l:6,  t:72},
-  "河童國":   {l:30, t:76},
-  "哥布林族": {l:57, t:70},
-  "套娃族":   {l:80, t:74},
-  // Neutral (bottom)
-  "中立小島": {l:47, t:89},
+  "人類王國": {l:14, t:17},
+  "精靈森域": {l:52, t:13},
+  "龍族火山": {l:78, t:10},
+  "獸人荒原": {l:86, t:32},
+  "巨人山丘": {l:86, t:58},
+  "侏儒劇場": {l:77, t:80},
+  "狐族賭館": {l:40, t:84},
+  "機械王國": {l:19, t:74},
+  "布丁狗族": {l:8,  t:58},
+  "河童國":   {l:10, t:38},
+  "哥布林族": {l:70, t:48},
+  "套娃族":   {l:36, t:24},
+  "中立小島": {l:50, t:47},
+  "迷霧島":   {l:32, t:57},
+  "金錢島":   {l:64, t:28},
+  "漩渦":     {l:56, t:69},
 };
 
 /* ── State ────────────────────────────────────────────────────────────────── */
@@ -66,11 +61,19 @@ let gameState = null;
 let validatedCommands = {};
 let execLog = [];
 let selectedTeam = '1';
-let currentMode = 'analysis';  // 'analysis' | 'real'
+let currentMode = 'real';  // 'analysis' | 'real'
 let _initialSetupData = null;   // saved at startGame(), used to pre-fill on reset
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
+  if (currentMode === 'real') {
+    const btn = document.getElementById('btn-mode');
+    if (btn) { btn.textContent = '📊 分析模式'; btn.classList.add('active'); }
+    const av = document.getElementById('analysis-view');
+    if (av) av.style.display = 'none';
+    const rm = document.getElementById('real-map');
+    if (rm) rm.classList.add('show');
+  }
   buildSetupScreen();
   fetchState();
 });
@@ -326,8 +329,28 @@ function renderTroopsBreakdown(zdata) {
 }
 
 /* ── Real mode map ────────────────────────────────────────────────────────── */
+function applyMapBackground(map) {
+  if (map.dataset.bgLoaded) return;
+  const tryImg = (src, fallback) => {
+    const img = new Image();
+    img.onload = () => {
+      map.style.backgroundImage = `url('${src}')`;
+      map.style.backgroundSize = 'cover';
+      map.style.backgroundPosition = 'center';
+      map.style.backgroundRepeat = 'no-repeat';
+      map.dataset.bgLoaded = '1';
+    };
+    img.onerror = fallback;
+    img.src = src;
+  };
+  tryImg('/static/assets/background.png', () =>
+    tryImg('/static/assets/background_fake.png', () => {})
+  );
+}
+
 function renderRealMap() {
   const map = document.getElementById('real-map');
+  applyMapBackground(map);
   // Remove old island elements (but keep anim-overlay)
   map.querySelectorAll('.real-island').forEach(el => el.remove());
 
@@ -363,20 +386,35 @@ function renderRealMap() {
     el.style.top = pos.t + '%';
     if (ownerColor) el.style.setProperty('--island-color', ownerColor);
 
-    // Troop breakdown
+    // Troop breakdown — line 1: owner + top-2 non-owner; line 2: rest
     const troops = zdata.troops || {};
     const troopEntries = Object.entries(troops).sort((a,b) => b[1]-a[1]);
-    const breakdownHtml = troopEntries.length > 0
-      ? troopEntries.map(([t,n]) =>
-          `<span style="color:${TEAM_COLORS[t]||'#888'}">${t}:${n}</span>`
-        ).join(' ')
-      : '';
-
-    const imgFile = `island_${code}_fake.png`;
+    let bdLine1 = [], bdLine2 = [];
+    if (troopEntries.length > 0) {
+      if (owner) {
+        const ownerEntry = troopEntries.find(([t]) => t === owner);
+        const nonOwner = troopEntries.filter(([t]) => t !== owner);
+        if (ownerEntry) bdLine1.push(ownerEntry);
+        bdLine1.push(...nonOwner.slice(0, 2));
+        bdLine2 = nonOwner.slice(2);
+      } else {
+        bdLine1 = troopEntries.slice(0, 3);
+        bdLine2 = troopEntries.slice(3);
+      }
+    }
+    const totalTeams = troopEntries.length;
+    const line2ShowCount = totalTeams <= 5;
+    const mkSpan = (t, n, showCount) =>
+      `<span style="color:${TEAM_COLORS[t]||'#888'}">${t}${showCount ? ':'+n : ''}</span>`;
+    const breakdownHtml = [
+      bdLine1.length ? `<div class="ri-bd-row">${bdLine1.map(([t,n]) => mkSpan(t,n,true)).join(' ')}</div>` : '',
+      bdLine2.length ? `<div class="ri-bd-row">${bdLine2.map(([t,n]) => mkSpan(t,n,line2ShowCount)).join(' ')}</div>` : '',
+    ].join('');
 
     el.innerHTML = `
       <div class="ri-img-wrap">
-        <img src="/static/assets/${imgFile}" alt="${code}" onerror="this.style.opacity='0.3'">
+        <img src="/static/assets/island_${code}.png" alt="${code}"
+          onerror="this.onerror=function(){this.style.opacity='0.3'};this.src='/static/assets/island_${code}_fake.png'">
         ${owner ? `<div class="ri-owner-dot" style="background:${ownerColor}"></div>` : ''}
         ${locked ? '<div class="ri-lock">🔒</div>' : ''}
       </div>

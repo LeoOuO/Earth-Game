@@ -605,20 +605,14 @@ body {
 }
 #real-map.show { display: block; }
 
-/* Sea texture lines */
+/* Subtle dark vignette over background for readability */
 #real-map::before {
   content: '';
   position: absolute;
   inset: 0;
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 28px,
-      rgba(88,166,255,0.03) 28px,
-      rgba(88,166,255,0.03) 29px
-    );
+  background: radial-gradient(ellipse at 50% 50%, transparent 40%, rgba(0,20,40,0.25) 100%);
   pointer-events: none;
+  z-index: 1;
 }
 
 .real-island {
@@ -632,25 +626,23 @@ body {
 }
 .ri-img-wrap {
   position: relative;
-  width: 68px;
-  height: 68px;
+  width: 84px;
+  height: 84px;
 }
 .ri-img-wrap img {
-  width: 68px;
-  height: 68px;
+  width: 84px;
+  height: 84px;
   object-fit: contain;
-  border-radius: 8px;
-  border: 2px solid rgba(255,255,255,0.1);
-  transition: border-color 0.3s, box-shadow 0.3s;
-  background: #0d1117;
+  border-radius: 0;
+  border: none;
+  transition: box-shadow 0.3s;
+  background: transparent;
   display: block;
 }
 .real-island.has-owner .ri-img-wrap img {
-  border-color: var(--island-color, rgba(255,255,255,0.3));
-  box-shadow: 0 0 10px var(--island-color, transparent);
+  box-shadow: 0 0 12px var(--island-color, transparent);
 }
 .real-island.contested .ri-img-wrap img {
-  border-color: var(--warning);
   box-shadow: 0 0 10px var(--warning);
   animation: contested-pulse 1.5s ease-in-out infinite alternate;
 }
@@ -660,31 +652,36 @@ body {
 }
 
 .ri-label {
-  margin-top: 4px;
+  margin-top: -8px;
   text-align: center;
+  text-shadow: 0 1px 4px rgba(0,10,30,0.95), 0 0 8px rgba(0,10,30,0.8);
 }
 .ri-code {
   font-family: 'Consolas', monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
-  color: var(--island-color, var(--text-muted));
+  color: var(--island-color, #ffffff);
   letter-spacing: 0.08em;
 }
 .ri-name {
-  font-size: 9px;
-  color: var(--text-muted);
-  opacity: 0.7;
+  font-size: 11px;
+  color: #e0f4ff;
+  opacity: 0.9;
 }
 .ri-troops {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--island-color, var(--text));
+  color: var(--island-color, #ffffff);
   margin-top: 1px;
 }
 .ri-breakdown {
-  font-size: 8px;
-  color: var(--text-muted);
+  font-size: 10px;
+  color: #cceeff;
+}
+.ri-bd-row {
   white-space: nowrap;
+  text-align: center;
+  line-height: 1.3;
 }
 .ri-owner-dot {
   position: absolute;
@@ -700,18 +697,30 @@ body {
   opacity: 0.9;
 }
 .real-island.resource .ri-img-wrap {
-  width: 52px;
-  height: 52px;
+  width: 64px;
+  height: 64px;
 }
 .real-island.resource .ri-img-wrap img {
-  width: 52px;
-  height: 52px;
+  width: 64px;
+  height: 64px;
   filter: hue-rotate(180deg) brightness(0.8);
   border-color: rgba(63,185,80,0.4);
 }
+/* FOG — slightly larger than other resource islands */
+#ri-FOG .ri-img-wrap { width: 80px; height: 80px; }
+#ri-FOG .ri-img-wrap img { width: 80px; height: 80px; }
+/* VORT — 25% larger, label pushed down */
+#ri-VORT .ri-img-wrap { width: 80px; height: 80px; }
+#ri-VORT .ri-img-wrap img { width: 80px; height: 80px; }
+#ri-VORT .ri-label { margin-top: 4px; }
+/* NEU — larger and full brightness */
+.real-island.neutral .ri-img-wrap {
+  width: 108px;
+  height: 108px;
+}
 .real-island.neutral .ri-img-wrap img {
-  filter: grayscale(0.6) brightness(0.7);
-  border-color: rgba(139,148,158,0.4);
+  width: 108px;
+  height: 108px;
 }
 
 /* Real mode locked badge */
