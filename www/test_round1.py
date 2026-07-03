@@ -258,13 +258,14 @@ def test_bug12_admin_set_zero_troops_same_round_move_succeeds():
     }
     new_s, log, _ = run_round(s, cmds)
 
-    # Move must have succeeded: neutral island should have team 1's troops
-    # (100 moved × 1.5 = 150, since no conflict penalty)
+    # Move must have succeeded: neutral island should have team 1's troops.
+    # 100 moved → Phase 4: _ceil100(100 * 1.5) = 200. T1 total = 200 (neutral) + 0 (HK cleared) = 200.
+    # Phase 4.5 rescue: T1 total 200 < 1000 → topped up to 1000 at neutral.
     neutral_t1 = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    assert neutral_t1 == math.floor(100 * 1.5), (
+    assert neutral_t1 == 1000, (
         f"Bug 12: team 1's move should succeed before ADMIN set fires. "
-        f"Expected {math.floor(100 * 1.5)} at neutral, got {neutral_t1}. "
-        f"log={[l for l in log if '管理員' in l or 'moving' in l or '中立' in l]}"
+        f"After ×1.5 (200) + rescue to 1000. Expected 1000 at neutral, got {neutral_t1}. "
+        f"log={[l for l in log if '管理員' in l or 'moving' in l or '中立' in l or '救濟' in l]}"
     )
 
     # ADMIN set cleared HK (after phase 5)
@@ -391,17 +392,20 @@ def test_bug10_set_forced_owner_unknown_team_engine_rejects():
 
 def test_bug_e_conflict_penalty_troops_skip_neutral_1_5x():
     """
-    [Required: e]
+    [Required: e — updated for new conflict behavior]
     T1 has 400 at HK. Submits attack(HK, ELF, 300) + attack(HK, DV, 200).
     Both targets are enemy zones. Demand = 500 > 400 → conflict.
-    ALL 400 troops from HK forced to neutral (no ×1.5).
+    New behavior: both conflicting commands are INVALIDATED (troops stay at HK).
+    NO redirect to neutral island.
 
     T1 also has 200 at GOB (T1-owned). Submits moving(GOB, NEU, 100) — legitimate.
 
-    Expected after round:
-    - Conflict troops (400): arrive at neutral as 400 (no ×1.5).
-    - Legitimate troops (100 from GOB): receive ×1.5 → floor(100 * 1.5) = 150.
-    - Total T1 at neutral = 400 + 150 = 550.
+    After round:
+    - Conflict commands invalidated: HK stays at 400 (no redirect).
+    - Legitimate move: 100 troops move from GOB to neutral → Phase 4: ×1.5 → ceil100(150)=200.
+    - GOB remaining = 100 < 300 → Phase 1.5 clears GOB.
+    - T1 total after Phase 4: HK=400 + neutral=200 = 600 < 1000 → rescue adds 400 to neutral.
+    - Total T1 at neutral = 600.
     """
     s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2
@@ -421,28 +425,30 @@ def test_bug_e_conflict_penalty_troops_skip_neutral_1_5x():
     new_s, log, _ = run_round(s, cmds)
 
     neutral_t1 = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    expected = 400 + math.floor(100 * 1.5)  # 400 + 150 = 550
+    # Conflict → troops stay at HK (400). GOB→NEU move: 100 → ×1.5 = 200; GOB cleared (100<300).
+    # T1 total = 400+200=600 < 1000 → rescue adds 400 → neutral = 600.
+    expected = 600
     assert neutral_t1 == expected, (
-        f"Bug e: conflict troops (400) should stay at 400 (no ×1.5); "
-        f"legit troops (100) should become 150 (×1.5). "
+        f"Bug e (new): conflict commands invalidated (no redirect); "
+        f"legit move 100→×1.5=200, rescue tops to 600. "
         f"Expected {expected} at neutral, got {neutral_t1}. "
-        f"log={[l for l in log if '中立' in l or '衝突' in l]}"
+        f"log={[l for l in log if '中立' in l or '衝突' in l or '救濟' in l]}"
     )
 
-    # Also verify the skip-1.5x message appears in the log
-    # Engine log format: "[中立] 1 兵力（N 衝突懲罰部分跳過，M × 1.5）= ..."
-    skip_logged = any("跳過" in l for l in log)
-    assert skip_logged, (
-        f"Log should mention '跳過' for conflict penalty troops skipping ×1.5. "
-        f"relevant log={[l for l in log if '中立' in l or '衝突' in l]}"
+    # Conflict commands were invalidated — HK troops stay
+    hk_t1 = new_s.zones["人類王國"].troops.get("1", 0)
+    assert hk_t1 == 400, (
+        f"T1's HK troops should stay at 400 (conflict commands invalidated), got {hk_t1}"
     )
 
 
 def test_bug_e_pure_conflict_no_1_5x_at_all():
     """
-    [Required: e — pure conflict case]
-    T1 has 300 at HK. Only conflict ops (no legit neutral moves).
-    All 300 troops forced to neutral. After Phase 4: still 300 (no ×1.5).
+    [Required: e — updated for new conflict behavior]
+    T1 has 300 at HK. Only conflict ops (demand 400 > 300).
+    New behavior: conflicting commands INVALIDATED — troops stay at HK (no redirect).
+    T1 total = 300 (all at HK) < 1000 → rescue adds 700 to neutral island.
+    T1 at neutral = 700.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2
@@ -456,12 +462,18 @@ def test_bug_e_pure_conflict_no_1_5x_at_all():
     }
     new_s, log, _ = run_round(s, cmds)
 
+    # Conflict commands invalidated → HK stays at 300
+    hk_t1 = new_s.zones["人類王國"].troops.get("1", 0)
+    assert hk_t1 == 300, (
+        f"Bug e: conflicting commands invalidated → HK stays at 300, got {hk_t1}"
+    )
+
     neutral_t1 = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    # All 300 penalty troops arrive at neutral WITHOUT ×1.5
-    assert neutral_t1 == 300, (
-        f"Bug e: pure conflict — 300 troops should stay 300 at neutral (no ×1.5), "
-        f"got {neutral_t1}. "
-        f"log={[l for l in log if '中立' in l or '衝突' in l]}"
+    # Rescue: T1 total = 300 < 1000 → adds 700 to neutral
+    assert neutral_t1 == 700, (
+        f"Bug e (new): conflict → no redirect; rescue adds 700 to neutral. "
+        f"Expected 700 at neutral, got {neutral_t1}. "
+        f"log={[l for l in log if '中立' in l or '救濟' in l]}"
     )
 
 
@@ -534,11 +546,10 @@ def test_bug_f_forced_owner_zero_troops_cross_round_earns_np():
 
 def test_bug_g_gold_island_np_proportional():
     """
-    [Required: g]
-    金錢島 with T1=600, T2=400 (total=1000). Bonus = 1000 NP.
-    Expected:
-      T1: floor(1000 * 600/1000) = 600 NP
-      T2: floor(1000 * 400/1000) = 400 NP
+    [Required: g — updated for new formula]
+    金錢島: 3000 coconuts split EVENLY among all teams present (ceil to 100).
+    T1=600, T2=400 (2 teams present): each gets ceil100(3000/2) = 1500 coconuts.
+    (No longer proportional to troops — equal split regardless of troop count.)
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2
@@ -551,19 +562,20 @@ def test_bug_g_gold_island_np_proportional():
 
     gold_log = [l for l in log if "金錢島" in l]
 
-    # Verify from log (NP from other zones also adds, so check log directly)
-    assert any("600" in l for l in gold_log), (
-        f"Bug g: T1 should gain 600 NP from 金錢島. log={gold_log}"
+    # New formula: equal split → each gets 1500 (ceil100(3000/2))
+    assert any("1500" in l for l in gold_log), (
+        f"Bug g: T1 should gain 1500 coconuts from 金錢島 (equal split). log={gold_log}"
     )
-    assert any("400" in l for l in gold_log), (
-        f"Bug g: T2 should gain 400 NP from 金錢島. log={gold_log}"
+    # Both teams get the same share
+    assert len([l for l in gold_log if "1500" in l]) == 2, (
+        f"Bug g: Both T1 and T2 should each gain 1500 (equal split). log={gold_log}"
     )
 
 
 def test_bug_g_gold_island_single_team_gets_all():
     """
-    [Required: g — single team]
-    金錢島 with only T1=500. T1 gets all 1000 NP bonus.
+    [Required: g — single team, updated for new formula]
+    金錢島 with only T1=500. T1 gets ceil100(3000/1) = 3000 coconuts.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2
@@ -574,8 +586,8 @@ def test_bug_g_gold_island_single_team_gets_all():
     new_s, log, _ = run_round(s, {})
 
     gold_log = [l for l in log if "金錢島" in l]
-    assert any("1000" in l for l in gold_log), (
-        f"Bug g: sole occupant of 金錢島 should gain 1000 NP. log={gold_log}"
+    assert any("3000" in l for l in gold_log), (
+        f"Bug g: sole occupant of 金錢島 should gain 3000 coconuts (ceil100(3000/1)). log={gold_log}"
     )
 
 
@@ -669,7 +681,8 @@ def test_attack_self_owned_territory_invalid():
 
 def test_union_self_ally_invalid():
     """
-    T1 submits union(HK, 1, ELF, 100) — union with self → invalid.
+    T1 submits help(HK, ELF, 100, 1) — help targeting self as partner → invalid.
+    (Old 4-arg union syntax replaced by help(S, E, n, P); self-help is invalid.)
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2
@@ -677,16 +690,16 @@ def test_union_self_ally_invalid():
     s.zones["人類王國"] = ZoneState(troops={"1": 500}, forced_owner="1")
     s.zones["精靈森域"] = ZoneState(troops={"2": 300}, forced_owner="2")
 
-    parsed = {"1": parse_commands("union(人類王國, 1, 精靈森域, 100)")}
+    parsed = {"1": parse_commands("help(人類王國, 精靈森域, 100, 1)")}
     vcmds = RoundValidator(s).validate_all(parsed)
 
     vc = vcmds["1"][0]
     assert not vc.valid, (
-        f"union with self should be invalid. "
+        f"help with self as partner should be invalid. "
         f"got valid={vc.valid}, reason={vc.reason!r}"
     )
     assert "自己" in vc.reason, (
-        f"Reason should mention 'self'. reason={vc.reason!r}"
+        f"Reason should mention '自己'. reason={vc.reason!r}"
     )
 
 
@@ -754,8 +767,9 @@ def test_round_phase_done_after_max_rounds():
 
 def test_five_op_limit_union_and_attack_mixed():
     """
-    Team submits 3 attacks + 2 union requests = 5 valid ops (exactly at limit).
-    All 5 should be valid.
+    Team submits 3 attacks + 2 help requests = 5 valid ops (exactly at limit).
+    All 5 should be valid. (Old union(S, P, E, n) replaced by help(S, E, n, P).)
+    Note: accept does NOT count towards the 5-op limit.
     """
     s = GameState(teams=["1", "2", "3", "4", "5"], max_rounds=3)
     s.round = 2
@@ -764,24 +778,25 @@ def test_five_op_limit_union_and_attack_mixed():
     targets = [ISLANDS[i] for i in range(1, 4)]
     for i, z in enumerate(targets):
         s.zones[z] = ZoneState(troops={str(i + 2): 100}, forced_owner=str(i + 2))
-    # T5 owns one more zone for union target
+    # T5 owns ISLANDS[4], T4 owns ISLANDS[3] — help targets must be allies' territories
     s.zones[ISLANDS[4]] = ZoneState(troops={"5": 200}, forced_owner="5")
 
-    # 3 attacks (100 each) + 2 unions requesting (100 each) = 600 total from 人類王國
+    # 3 attacks (100 each) + 2 help commands (100 each) = 600 total from 人類王國
     # (within budget of 3000)
+    # help(S, E, n, P): source=人類王國, target=ally's territory, n=100, partner=ally
     cmds = (
         f"attack(人類王國, {targets[0]}, 100) "
         f"attack(人類王國, {targets[1]}, 100) "
         f"attack(人類王國, {targets[2]}, 100) "
-        f"union(人類王國, 5, {ISLANDS[4]}, 100) "
-        f"union(人類王國, 4, {ISLANDS[3]}, 100)"
+        f"help(人類王國, {ISLANDS[4]}, 100, 5) "
+        f"help(人類王國, {ISLANDS[3]}, 100, 4)"
     )
     parsed = {"1": parse_commands(cmds)}
     vcmds = RoundValidator(s).validate_all(parsed)
 
     valid_count = sum(1 for vc in vcmds["1"] if vc.valid)
     assert valid_count == 5, (
-        f"3 attacks + 2 unions should all be valid (exactly 5 ops). "
+        f"3 attacks + 2 help commands should all be valid (exactly 5 ops). "
         f"Got {valid_count} valid. "
         f"Details: {[(vc.result.command.op if vc.result.command else '?', vc.valid, vc.reason) for vc in vcmds['1']]}"
     )
@@ -789,20 +804,24 @@ def test_five_op_limit_union_and_attack_mixed():
 
 def test_bonus_20pct_floor_rounding():
     """
-    Loser pool = 7 troops → floor(7 * 0.20) = floor(1.4) = 1.
-    Winner gets exactly 1 bonus troop.
+    New Situation A formula:
+      T1 attacks with 300, defender (T2) has 7.
+      total_attacker=300 > defender=7 → Situation A (attacker wins).
+      survival = max(0, 300 - max(7, 0)) = max(0, 293) = 293.
+      _ceil100(293) = 300. Leader (T1) guarantee ≥ 500 → T1 gets 500.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2
     s.phase = "input"
     s.zones["人類王國"] = ZoneState(troops={"1": 500})
-    s.zones["龍族火山"] = ZoneState(troops={"2": 7})  # loser has 7 troops
+    s.zones["龍族火山"] = ZoneState(troops={"2": 7})  # defender has 7 troops
 
     new_s, log, _ = run_round(s, {"1": "attack(人類王國, 龍族火山, 300)"})
 
     t1 = new_s.zones["龍族火山"].troops.get("1", 0)
-    expected_bonus = math.floor(7 * 0.20)  # = 1
-    assert t1 == 300 + expected_bonus, (
-        f"Winner should get floor(7 * 0.2) = {expected_bonus} bonus. "
-        f"Expected {300 + expected_bonus}, got {t1}"
+    # survival=293 → ceil100=300 < 500 → leader guarantee → 500
+    expected = 500
+    assert t1 == expected, (
+        f"Winner: survival=293→ceil100=300 < 500→leader guarantee=500. "
+        f"Expected {expected}, got {t1}"
     )

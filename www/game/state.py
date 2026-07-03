@@ -18,25 +18,12 @@ ISLANDS = [
 
 NEUTRAL_ISLAND = "中立小島"
 
-RESOURCE_POINTS = ["迷霧島", "金錢島", "漩渦"]
+RESOURCE_POINTS = ["迷霧島", "金錢島"]
 
 ALL_ZONES = ISLANDS + [NEUTRAL_ISLAND] + RESOURCE_POINTS
 
-# National power produced per territory per round (difficulty-based)
-TERRITORY_POWER: dict[str, int] = {
-    "人類王國":  900,
-    "精靈森域":  700,
-    "龍族火山": 1000,
-    "獸人荒原":  600,
-    "巨人山丘":  600,
-    "侏儒劇場":  600,
-    "狐族賭館":  700,
-    "機械王國":  900,
-    "布丁狗族": 1000,
-    "河童國":   1000,
-    "哥布林族":  700,
-    "套娃族":    700,
-}
+# Coconuts produced per territory per round (equal for all islands)
+TERRITORY_POWER: dict[str, int] = {zone: 1000 for zone in ISLANDS}
 
 # English short code for each zone (for commands and display)
 ZONE_CODES: dict[str, str] = {
@@ -55,7 +42,6 @@ ZONE_CODES: dict[str, str] = {
     "中立小島": "NEU",
     "迷霧島":   "FOG",
     "金錢島":   "GOLD",
-    "漩渦":     "VORT",
 }
 
 # Accepted aliases in commands (English codes + abbreviations)
@@ -76,16 +62,13 @@ ZONE_ALIASES: dict[str, str] = {
     "NEU":  "中立小島",
     "FOG":  "迷霧島",
     "GOLD": "金錢島",
-    "VORT": "漩渦",
     # Chinese abbreviations (backward compat)
     "neutral": "中立小島",
     "中立":    "中立小島",
     "迷霧":    "迷霧島",
     "金錢":    "金錢島",
-    "漩渦島":  "漩渦",
     "R1":      "迷霧島",
     "R2":      "金錢島",
-    "R3":      "漩渦",
 }
 
 def resolve_zone(name: str) -> Optional[str]:

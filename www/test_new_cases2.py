@@ -50,44 +50,33 @@ def run_round(state: GameState, cmds_by_team: dict) -> tuple:
 
 def test_garrison_is_pre_round_only():
     """
-    T1 has 30 troops at 精靈森域 (target) BEFORE the round starts.
-    T1 also submits moving(龍族火山, 精靈森域, 50) in this round.
-    T2 owns 精靈森域 with 200 troops.
-    T1 attacks from 獸人荒原 with 100.
-
-    Pre-round garrison = 30 (only the troops that were already there).
-    moving(龍族火山 → 精靈森域, 50) arrives as fresh troops — NOT garrison.
-
-    T1 attack = 100; T2 defender = 200.
-    T1 loses (100 < 200).
-
-    Key assertion: garrison used in battle = 30, NOT 30+50=80.
-    i.e. T2 bonus = floor((100 + 30)*0.20) = 26.
-         T2 ends with 200 + 26 = 226.
+    Garrison betrayal rule: T1 cannot attack 精靈森域 if T1 already has garrison there.
+    T1 has 30 garrison troops at 精靈森域 (pre-round). T1's attack from 獸人荒原 is INVALID.
+    T1's moving(龍族火山→精靈森域, 50) IS valid (non-attack move to enemy zone).
+    T2 owns 精靈森域 with 300 troops → total after move = 380 ≥ 300 → no Phase 1.5 clear.
+    Result: no battle, T2 retains ownership.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
     s.zones["獸人荒原"]  = ZoneState(troops={"1": 500})
     s.zones["龍族火山"]  = ZoneState(troops={"1": 200})
-    s.zones["精靈森域"]  = ZoneState(troops={"1": 30, "2": 200}, forced_owner="2")
+    # T1=30 garrison, T2=300 → total=330 ≥ 300 → Phase 1.5 safe
+    s.zones["精靈森域"]  = ZoneState(troops={"1": 30, "2": 300}, forced_owner="2")
 
     cmds = {
         "1": "moving(龍族火山, 精靈森域, 50) attack(獸人荒原, 精靈森域, 100)",
     }
     new_s, log, _ = run_round(s, cmds)
 
-    # T2 should own after T1 loses
+    # T1's attack is INVALID (garrison betrayal rule) → T2 still owns
     owner = new_s.zones["精靈森域"].owner()
-    assert owner == "2", f"T2 should still own 精靈森域 after T1 loses, got owner={owner}"
+    assert owner == "2", f"T2 should still own 精靈森域 (T1's attack blocked), got owner={owner}"
 
+    # No battle → T2's troops unchanged
     t2_troops = new_s.zones["精靈森域"].troops.get("2", 0)
-    # garrison = 30 (pre-round), attack = 100
-    # loser pool = 100 (attack) + 30 (losing garrison) = 130
-    expected_bonus = math.floor(130 * 0.20)
-    expected_t2 = 200 + expected_bonus
-    assert t2_troops == expected_t2, (
-        f"T2 should have {expected_t2} (garrison fix: pre-round only), got {t2_troops}. "
-        f"log={[l for l in log if '戰鬥' in l or '駐守' in l]}"
+    assert t2_troops == 300, (
+        f"T2 should have 300 (no battle since T1 attack invalid), got {t2_troops}. "
+        f"log={[l for l in log if '戰鬥' in l or '叛變' in l]}"
     )
 
 
@@ -150,11 +139,12 @@ def test_zero_troop_owner_earns_np_multiple_rounds():
 def test_multi_team_zone_np_formula():
     """
     龍族火山 (x=1000), T1=forced_owner with 300 troops, T2 has 100 troops.
-    total_t = 400.
-    half_x = 500.
-    T1 (owner): floor(500 + 500 * (300/400)) = floor(500 + 375) = 875
-    T2 (non-owner): floor(500 * (100/400)) = floor(125) = 125
+    total_t = 400. New engine uses proportional _ceil100 for co-occupied zones.
+    T1: _ceil100(1000 * 300/400) = _ceil100(750) = 800
+    T2: _ceil100(1000 * 100/400) = _ceil100(250) = 300
+    Note: T2=100 < 300 alone but total=400 → Phase 1.5 not triggered.
     """
+    import math as _math
     x = TERRITORY_POWER["龍族火山"]   # 1000
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -162,10 +152,10 @@ def test_multi_team_zone_np_formula():
 
     new_s, log, _ = run_round(s, {})
 
+    # New engine: proportional _ceil100 for co-occupied (no owner half_x split)
     total_t = 400
-    half_x  = x / 2
-    expected_t1 = math.floor(half_x + half_x * (300 / total_t))
-    expected_t2 = math.floor(half_x * (100 / total_t))
+    expected_t1 = int(_math.ceil(x * 300 / total_t / 100) * 100)  # _ceil100(750) = 800
+    expected_t2 = int(_math.ceil(x * 100 / total_t / 100) * 100)  # _ceil100(250) = 300
 
     np1 = new_s.national_power.get("1", 0)
     np2 = new_s.national_power.get("2", 0)
@@ -185,20 +175,22 @@ def test_multi_team_zone_np_formula():
 
 def test_tied_zone_np_no_owner():
     """
-    人類王國 (x=900), T1=100, T2=100 (tied, no forced_owner → owner()=None).
-    Since there is no owner, the full X is distributed proportionally (BUG-13 fix).
-    proportion each = 100/200 = 0.5.
-    T1: floor(900 * 0.5) = 450; T2: floor(900 * 0.5) = 450.
+    人類王國 (x=900), T1=500, T2=500 (tied, no forced_owner → owner()=None).
+    New engine: proportional distribution with ceil100.
+    T1: ceil100(900 * 500/1000) = ceil100(450) = 500 NP
+    T2: ceil100(900 * 500/1000) = ceil100(450) = 500 NP
+    Note: using 500 troops each (>=300) to avoid phase 1.5 clearing.
     """
     x = TERRITORY_POWER["人類王國"]   # 900
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
-    s.zones["人類王國"] = ZoneState(troops={"1": 100, "2": 100})  # tied, no forced_owner
+    s.zones["人類王國"] = ZoneState(troops={"1": 500, "2": 500})  # tied, no forced_owner
 
     new_s, log, _ = run_round(s, {})
 
-    # With owner=None, full X is distributed proportionally (no ½X owner bonus)
-    expected = math.floor(x * 0.5)
+    # ceil100(900 * 500/1000) = ceil100(450) = 500
+    import math as _math
+    expected = int(_math.ceil(x * 500 / 1000 / 100) * 100)  # = 500
 
     np1 = new_s.national_power.get("1", 0)
     np2 = new_s.national_power.get("2", 0)
@@ -219,44 +211,30 @@ def test_tied_zone_np_no_owner():
 def test_zero_troop_forced_owner_in_multi_team_zone():
     """
     T1 is forced_owner of 龍族火山 (x=1000) with 0 troops.
-    T2 has 100 troops there.
+    T2 has 300 troops there (≥300 so Phase 1.5 does NOT clear).
 
-    The engine recognises T1 as 'owner' via forced_owner even at 0 troops and
-    uses the multi-team formula (total_t = 100, half_x = 500):
-      T1 (owner, 0 troops, prop=0):  floor(500 + 500 * 0)   = 500
-      T2 (non-owner, prop=1):         floor(500 * 1)          = 500
-
-    NOTE: This is the CURRENT behaviour — the forced_owner gets the lord's
-    half_x base share regardless of having 0 troops, because owner() returns
-    T1 (via forced_owner) and the multi-team branch is taken.
+    Engine behaviour: total_t=300 > 0, len(troops)==1 → sole occupant branch.
+    T2 gets all 1000 NP; T1 (0 troops, not in dict) gets 0 NP despite forced_owner.
+    Note: T1 retains forced_owner and earns NP only when total_t==0 (all leave).
     """
     x = TERRITORY_POWER["龍族火山"]  # 1000
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
-    # T1 is forced_owner but has 0 troops (not stored in dict)
-    s.zones["龍族火山"] = ZoneState(troops={"2": 100}, forced_owner="1")
+    # T1 is forced_owner but has 0 troops; T2 has 300 (≥300, not cleared)
+    s.zones["龍族火山"] = ZoneState(troops={"2": 300}, forced_owner="1")
 
     new_s, log, _ = run_round(s, {})
 
     np1 = new_s.national_power.get("1", 0)
     np2 = new_s.national_power.get("2", 0)
 
-    # Multi-team formula: total_t=100, owner=T1 (0 troops), T2 has 100.
-    # half_x = 500
-    # T1 (owner): floor(500 + 500 * (0/100)) = floor(500 + 0) = 500
-    # T2 (non-owner): floor(500 * (100/100)) = floor(500) = 500
-    half_x = x / 2
-    expected_t1 = math.floor(half_x + half_x * (0 / 100))   # = 500
-    expected_t2 = math.floor(half_x * (100 / 100))           # = 500
-
     dv_log = [l for l in log if "龍族火山" in l]
-    assert np1 == expected_t1, (
-        f"0-troop forced_owner T1: expected {expected_t1} NP (lord's base share), "
+    assert np1 == 0, (
+        f"0-troop T1: expected 0 NP (sole-occupant branch gives all to T2), "
         f"got {np1}. log={dv_log}"
     )
-    assert np2 == expected_t2, (
-        f"sole-presence T2: expected {expected_t2} NP (non-owner proportional), "
-        f"got {np2}. log={dv_log}"
+    assert np2 == x, (
+        f"sole-presence T2: expected {x} NP, got {np2}. log={dv_log}"
     )
 
 
@@ -272,7 +250,8 @@ def test_non_admin_set_blocked():
     """
     s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2; s.phase = "input"
-    s.zones["人類王國"] = ZoneState(troops={"1": 100})
+    # T1 needs ≥300 to survive Phase 1.5 (otherwise engine clears the zone)
+    s.zones["人類王國"] = ZoneState(troops={"1": 300})
 
     parsed = {"3": parse_commands("set(HK, 1:500)")}
     vcmds  = RoundValidator(s).validate_all(parsed)
@@ -283,7 +262,7 @@ def test_non_admin_set_blocked():
 
     new_s, log, _ = _execute_round(s, vcmds)
     # State should be unchanged for 人類王國
-    assert new_s.zones["人類王國"].troops.get("1", 0) == 100, (
+    assert new_s.zones["人類王國"].troops.get("1", 0) == 300, (
         "state must not change when non-admin set() is blocked"
     )
 
@@ -404,7 +383,8 @@ def test_one_over_troop_limit_conflict_fires():
     """
     T1 has 100 troops at 人類王國.
     Submits attack(人類王國, 精靈森域, 60) + moving(人類王國, 中立小島, 41).
-    Total = 101 > 100 → both ops invalidated; 100 troops forced to neutral island.
+    Total = 101 > 100 → both ops invalidated; troops stay at 人類王國 (no forced redirect).
+    Phase 1.5: 人類王國 has 100 < 300 → cleared. T1 total=0 < 1000 → rescue: +1000 at neutral.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -426,11 +406,12 @@ def test_one_over_troop_limit_conflict_fires():
     )
 
     new_s, log, _ = _execute_round(s, vcmds)
-    # All 100 troops should be at neutral island (no ×1.5 for conflict troops)
+    # Both commands invalid → troops stay at 人類王國 (100). Phase 1.5 clears it (100<300).
+    # T1 total=0 → rescue tops to 1000 at neutral island.
     neutral_t1 = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    assert neutral_t1 == 100, (
-        f"conflict penalty should send 100 troops to neutral (no ×1.5), got {neutral_t1}. "
-        f"log={[l for l in log if '衝突' in l or '中立' in l]}"
+    assert neutral_t1 == 1000, (
+        f"conflict makes commands invalid; Phase 1.5 clears 人類王國; rescue → 1000 at neutral. "
+        f"got {neutral_t1}. log={[l for l in log if '衝突' in l or '中立' in l or '救濟' in l]}"
     )
 
 
@@ -441,10 +422,9 @@ def test_one_over_troop_limit_conflict_fires():
 def test_zero_troop_defender_earns_bonus_when_attackers_mutually_eliminate():
     """
     T1 is forced_owner of 精靈森域 with 0 troops.
-    T2 attacks with 200, T3 attacks with 200 → mutual elimination.
-    T1 wins as nominal defender with 0 troops.
-    Bonus = floor((200+200) * 0.20) = 80.
-    T1 ends with 0 + 80 = 80 troops at 精靈森域.
+    T2 attacks with 200, T3 attacks with 200 → mutual elimination (same size, same troops).
+    Engine: winner_cid=None → defender retains (troops={}, forced_owner='1').
+    No bonus is added in the mutual-elimination path — T1 retains 0 troops but keeps ownership.
     """
     s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -457,16 +437,15 @@ def test_zero_troop_defender_earns_bonus_when_attackers_mutually_eliminate():
         "3": "attack(獸人荒原, 精靈森域, 200)",
     })
 
-    expected_bonus = math.floor((200 + 200) * 0.20)  # 80
     t1_troops = new_s.zones["精靈森域"].troops.get("1", 0)
     owner = new_s.zones["精靈森域"].owner()
 
     assert owner == "1", (
-        f"nominal defender T1 should win when all attackers mutually eliminate, "
+        f"T1 retains forced_owner when all attackers mutually eliminate, "
         f"got owner={owner}. log={[l for l in log if '戰鬥' in l or '同歸' in l]}"
     )
-    assert t1_troops == expected_bonus, (
-        f"T1 should get {expected_bonus} bonus troops, got {t1_troops}. "
+    assert t1_troops == 0, (
+        f"T1 gets 0 bonus troops in mutual-elimination path, got {t1_troops}. "
         f"log={[l for l in log if '戰鬥' in l or '同歸' in l]}"
     )
 
@@ -479,9 +458,10 @@ def test_coalition_winner_each_member_gets_bonus():
     """
     T1 (300 troops) + T2 (200 troops) coalition attacks 精靈森域.
     T3 defends 精靈森域 with 300 troops.
-    Coalition total = 500 > 300 → coalition wins.
-    Loser pool = 300. Bonus = floor(300 * 0.20) = 60.
-    T1 ends with 300 + 60 = 360; T2 ends with 200 + 60 = 260.
+    Coalition total = 500 > 300 → Situation A.
+    survival = max(0, 500-300) = 200.
+    T1 = _ceil100(200*300/500) = _ceil100(120) = 200 → leader → 200 < 500 → 500.
+    T2 = _ceil100(200*200/500) = _ceil100(80) = 100.
     """
     s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -494,16 +474,15 @@ def test_coalition_winner_each_member_gets_bonus():
         "2": "union_attack(龍族火山, [1], 精靈森域, 200)",
     })
 
-    bonus = math.floor(300 * 0.20)  # 60
     t1 = new_s.zones["精靈森域"].troops.get("1", 0)
     t2 = new_s.zones["精靈森域"].troops.get("2", 0)
 
-    assert t1 == 300 + bonus, (
-        f"T1 should have {300 + bonus} troops, got {t1}. "
+    assert t1 == 500, (
+        f"T1 (leader, 300 troops) should get 500 (leader guarantee), got {t1}. "
         f"log={[l for l in log if '戰鬥' in l]}"
     )
-    assert t2 == 200 + bonus, (
-        f"T2 should have {200 + bonus} troops, got {t2}. "
+    assert t2 == 100, (
+        f"T2 (200 troops) should get 100 (_ceil100(80)=100), got {t2}. "
         f"log={[l for l in log if '戰鬥' in l]}"
     )
 
@@ -514,19 +493,18 @@ def test_coalition_winner_each_member_gets_bonus():
 
 def test_conflict_penalty_and_legit_moving_to_neutral_same_round():
     """
-    T1 has 300 troops at 人類王國 (conflict → 300 forced to neutral without ×1.5).
-    T1 also has 200 troops at 精靈森域 (legitimately moves 100 to neutral).
+    T1 has 300 troops at 人類王國 (conflict → both ops INVALID, troops stay at source).
+    T1 also has 200 troops at 精靈森域 (legitimately moves 100 to neutral: ×1.5=150).
 
     Conflict setup: attack(人類王國, 龍族火山, 200) + moving(人類王國, 中立小島, 200)
-    → demand 400 > 300 available → both ops from 人類王國 invalidated, 300 troops
-    forced to neutral (no ×1.5 for the penalised portion).
+    → demand 400 > 300 available → both ops from 人類王國 invalidated.
+    No forced-to-neutral in new engine; troops stay at 人類王國.
 
-    Legit: moving(精靈森域, 中立小島, 100) → no conflict.
+    Legit: moving(精靈森域, 中立小島, 100) → 100×1.5=150 at neutral.
 
-    After round:
-    - Conflict troops (300): penalised, stays 300 at neutral (no ×1.5).
-    - Legit troops (100): ×1.5 → 150.
-    Total at neutral = 300 + 150 = 450.
+    After Phase 1: 精靈森域 has 100 left (200-100) < 300 → Phase 1.5 clears.
+    T1 total = 300 (人類王國) + 0 (精靈森域 cleared) + 150 (neutral) = 450 < 1000.
+    Rescue: +550 at neutral → neutral = 150+550 = 700.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -534,8 +512,6 @@ def test_conflict_penalty_and_legit_moving_to_neutral_same_round():
     s.zones["精靈森域"] = ZoneState(troops={"1": 200})
     s.zones["龍族火山"] = ZoneState(troops={"2": 500})
 
-    # Conflict: attack(人類王國, 龍族火山, 200) + moving(人類王國, 中立小島, 200) = 400 > 300
-    # Legit: moving(精靈森域, 中立小島, 100) → no conflict
     cmds = {
         "1": (
             "attack(人類王國, 龍族火山, 200) "
@@ -546,10 +522,10 @@ def test_conflict_penalty_and_legit_moving_to_neutral_same_round():
     new_s, log, _ = run_round(s, cmds)
 
     neutral_t1 = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    expected = 300 + math.floor(100 * 1.5)  # 300 + 150 = 450
-    assert neutral_t1 == expected, (
-        f"expected {expected} at neutral (300 conflict + 150 legit), got {neutral_t1}. "
-        f"log={[l for l in log if '中立' in l or '衝突' in l]}"
+    # Legit 100 × 1.5 = 150; Phase 1.5 clears 精靈森域; rescue +550 = total 700
+    assert neutral_t1 == 700, (
+        f"expected 700 at neutral (legit 150 + rescue 550), got {neutral_t1}. "
+        f"log={[l for l in log if '中立' in l or '衝突' in l or '救濟' in l]}"
     )
 
 

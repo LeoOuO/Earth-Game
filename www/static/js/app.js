@@ -17,15 +17,15 @@ const TERRITORY_DIFF = {
   "河童國":"★★★★★","哥布林族":"★★★","套娃族":"★★★",
 };
 const TERRITORY_POWER = {
-  "人類王國":900,"精靈森域":700,"龍族火山":1000,"獸人荒原":600,
-  "巨人山丘":600,"侏儒劇場":600,"狐族賭館":700,"機械王國":900,
-  "布丁狗族":1000,"河童國":1000,"哥布林族":700,"套娃族":700,
+  "人類王國":1000,"精靈森域":1000,"龍族火山":1000,"獸人荒原":1000,
+  "巨人山丘":1000,"侏儒劇場":1000,"狐族賭館":1000,"機械王國":1000,
+  "布丁狗族":1000,"河童國":1000,"哥布林族":1000,"套娃族":1000,
 };
 const SPECIAL_ZONES = [
-  {name:"中立小島", note:"中立，兵力×1.5/回合", icon:"🏝", code:"NEU"},
-  {name:"迷霧島",   note:"R1：1000兵力/回合（第2回合起）", icon:"🌫", code:"FOG"},
-  {name:"金錢島",   note:"R2：1000椰子/回合（第2回合起）", icon:"💰", code:"GOLD"},
-  {name:"漩渦",     note:"R3：依人數決定（第2回合起）",    icon:"🌀", code:"VORT"},
+  {name:"中立小島", note:"中立，兵力×1.5/回合（向上取百位）", icon:"🏝", code:"NEU"},
+  {name:"迷霧島",   note:"R1：≤4隊各得2000兵+1000椰（第2回合起）", icon:"🌫", code:"FOG"},
+  {name:"金錢島",   note:"R2：3000椰子平分（第2回合起）", icon:"💰", code:"GOLD"},
+  {name:"漩渦",     note:"R3：奇數隊→3000兵；偶數隊→3000椰；6隊→無（第2回合起）", icon:"🌀", code:"VORT"},
 ];
 
 /* Island English codes */
@@ -105,10 +105,9 @@ function buildSetupScreen() {
     tr.innerHTML = `
       <td style="font-weight:600">${zone} <span style="font-size:9px;color:var(--accent);font-family:monospace">${code}</span></td>
       <td style="color:var(--text-muted)">${TERRITORY_DIFF[zone]||''}</td>
-      <td style="display:flex;align-items:center;gap:6px">
-        <select class="setup-input" data-zone-team="${zone}" style="width:75px">${opts}</select>
-        <input type="number" min="0" value="" class="setup-input" data-zone-n="${zone}"
-               placeholder="兵力" style="width:80px">
+      <td>
+        <select class="setup-input" data-zone-team="${zone}" style="width:90px">${opts}</select>
+        <span style="font-size:10px;color:var(--text-muted);margin-left:4px">→ 500兵</span>
       </td>`;
     tbody.appendChild(tr);
   });
@@ -142,9 +141,7 @@ async function startGame() {
     const zone = sel.dataset.zoneTeam;
     const team = sel.value;
     if (!team) return;
-    const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
-    const n = parseInt(nInp?.value) || 0;
-    if (n > 0) territories[zone] = {[team]: n};
+    territories[zone] = {[team]: 500};
   });
 
   const initTroops = {};
@@ -164,13 +161,11 @@ async function startGame() {
   _initialSetupData = {
     teams: [...teams],
     max_rounds: rounds,
-    zoneData: {},    // zone → {team, n}
+    zoneData: {},    // zone → {team}
     troopTexts: {},  // troop-team → value
   };
   document.querySelectorAll('[data-zone-team]').forEach(sel => {
-    const zone = sel.dataset.zoneTeam;
-    const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
-    _initialSetupData.zoneData[zone] = {team: sel.value, n: nInp?.value || ''};
+    _initialSetupData.zoneData[sel.dataset.zoneTeam] = {team: sel.value};
   });
   document.querySelectorAll('[data-troop-team]').forEach(inp => {
     _initialSetupData.troopTexts[inp.dataset.troopTeam] = inp.value;
@@ -1088,8 +1083,6 @@ function openSetupWithPrefill() {
       const zone = sel.dataset.zoneTeam;
       const d = _initialSetupData.zoneData?.[zone] || {};
       sel.value = d.team || '';
-      const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
-      if (nInp) nInp.value = d.n || '';
     });
     // Restore troop inputs
     document.querySelectorAll('[data-troop-team]').forEach(inp => {
@@ -1114,20 +1107,17 @@ function testInit() {
 
   // Clear all territory inputs
   document.querySelectorAll('[data-zone-team]').forEach(sel => { sel.value = ''; });
-  document.querySelectorAll('[data-zone-n]').forEach(inp => { inp.value = ''; });
 
-  // Set initial territories for teams 1–4 only
+  // Set initial territories for teams 1–4 only (500 troops auto-assigned)
   const territories = {
-    '人類王國': {team: '1', n: '500'},
-    '精靈森域': {team: '2', n: '400'},
-    '龍族火山': {team: '3', n: '300'},
-    '獸人荒原': {team: '4', n: '200'},
+    '人類王國': '1',
+    '精靈森域': '2',
+    '龍族火山': '3',
+    '獸人荒原': '4',
   };
-  Object.entries(territories).forEach(([zone, d]) => {
+  Object.entries(territories).forEach(([zone, team]) => {
     const sel = document.querySelector(`[data-zone-team="${zone}"]`);
-    const nInp = document.querySelector(`[data-zone-n="${zone}"]`);
-    if (sel) sel.value = d.team;
-    if (nInp) nInp.value = d.n;
+    if (sel) sel.value = team;
   });
 
   // Set init troops for all 10 teams
@@ -1151,11 +1141,10 @@ function uniformInit() {
   // All teams
   const activeTeams = ALL_TEAMS.slice();
 
-  // Distribute 12 territories round-robin among 10 teams with n troops each
+  // Distribute 12 territories round-robin among 10 teams (500 troops auto-assigned)
   document.querySelectorAll('[data-zone-team]').forEach((sel, i) => {
     sel.value = ALL_TEAMS[i % ALL_TEAMS.length];
   });
-  document.querySelectorAll('[data-zone-n]').forEach(inp => { inp.value = n; });
 
   // Set init troops (neutral island) for all 10 teams
   document.querySelectorAll('[data-troop-team]').forEach(inp => { inp.value = n; });

@@ -10,8 +10,7 @@ Required scenarios:
      removes 0-troop entries; next round zone_start_owners can still find T1 as
      nominal defender.
   c. resource points: round=1 does NOT trigger; round=2 DOES trigger.
-  d. 漩渦 with exactly 4 teams → no output (else branch stays silent).
-  e. admin-only sub_round increments: 3 consecutive admin-only rounds → sub_round=1,2,3.
+  d. admin-only sub_round increments: 3 consecutive admin-only rounds → sub_round=1,2,3.
   f. T1 sends union_attack from two zones to same target, same coalition → troops sum.
   g. Stress: 10 teams, 5 legitimate coalition commands per team (2 union + 3
      union_attack), 3 rounds. Timing, no crash, state consistency.
@@ -151,17 +150,17 @@ def test_a3_full_3round_chain():
     s3, log3, _ = run_round(s2, {})
 
     # Verify specifically via log: 龍族火山 entry says "0兵力領主" and "+1000"
-    dv_np_log = [l for l in log3 if "龍族火山" in l and "國力" in l]
+    dv_np_log = [l for l in log3 if "龍族火山" in l and ("椰子" in l or "國力" in l)]
     assert dv_np_log, (
-        f"R3: should have NP log entry for 龍族火山. "
-        f"log={[l for l in log3 if '龍族' in l or '國力' in l]}"
+        f"R3: should have coconut log entry for 龍族火山. "
+        f"log={[l for l in log3 if '龍族' in l or '椰子' in l]}"
     )
     assert any(str(x_dv) in l for l in dv_np_log), (
-        f"R3: 龍族火山 NP log should mention {x_dv}. dv_np_log={dv_np_log}"
+        f"R3: 龍族火山 log should mention {x_dv}. dv_np_log={dv_np_log}"
     )
     assert any("0兵力領主" in l for l in log3), (
         f"R3: log should mention '0兵力領主'. "
-        f"log={[l for l in log3 if '國力' in l or '龍族' in l]}"
+        f"log={[l for l in log3 if '椰子' in l or '龍族' in l]}"
     )
 
 
@@ -247,18 +246,17 @@ def test_b2_forced_owner_survives_cleanup_for_np():
 
 def test_c1_resource_points_locked_round1():
     """
-    Round 1: 迷霧島, 金錢島, 漩渦 all have troops but produce nothing.
+    Round 1: 迷霧島, 金錢島 all have troops but produce nothing.
     """
     s = make_state(round_num=1, teams=["1", "2"])
     s.zones["迷霧島"] = ZoneState(troops={"1": 500})
     s.zones["金錢島"] = ZoneState(troops={"1": 500})
-    s.zones["漩渦"] = ZoneState(troops={"1": 500})
     s.national_power["1"] = 0
 
     new_s, log, _ = run_round(s, {})
 
     # No resource point log lines
-    rp_log = [l for l in log if any(rp in l for rp in ["迷霧島", "金錢島", "漩渦"])]
+    rp_log = [l for l in log if any(rp in l for rp in ["迷霧島", "金錢島"])]
     assert rp_log == [], (
         f"Round 1: resource points should produce nothing. Got: {rp_log}"
     )
@@ -309,71 +307,6 @@ def test_c3_resource_points_first_available_exactly_round2():
     s3, log2, _ = run_round(s2, {})
     gold_log2 = [l for l in log2 if "金錢島" in l]
     assert gold_log2, f"Round 2 must trigger 金錢島: {gold_log2}"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# d.  漩渦 exactly 4 teams → no output (else branch silent)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def test_d_vortex_exactly_4_teams_no_output():
-    """
-    漩渦 with exactly 4 teams present → no log output (not '不產出' either —
-    well actually the engine DOES log '不產出', so verify the 4-team path fires
-    and does NOT grant any troops/NP).
-    """
-    s = make_state(round_num=2, teams=["1", "2", "3", "4", "5"])
-    s.zones["漩渦"] = ZoneState(troops={"1": 100, "2": 200, "3": 300, "4": 400})
-    for t in ["1", "2", "3", "4"]:
-        s.national_power[t] = 0
-
-    troops_before = {t: s.zones["漩渦"].troops[t] for t in ["1","2","3","4"]}
-    np_before = {t: 0 for t in ["1","2","3","4"]}
-
-    new_s, log, _ = run_round(s, {})
-
-    # No troop change in 漩渦 for any of the 4 teams
-    vort = new_s.zones["漩渦"]
-    for t in ["1","2","3","4"]:
-        assert vort.troops.get(t, 0) == troops_before[t], (
-            f"漩渦 4-team: {t}'s troops should not change. "
-            f"Before={troops_before[t]}, After={vort.troops.get(t, 0)}"
-        )
-
-    # No NP granted specifically from 漩渦 (log check)
-    vort_np_log = [l for l in log if "漩渦" in l and ("國力" in l or "兵力" in l and "不產出" not in l)]
-    # The engine logs "[漩渦] 恰好 4 國，不產出" — that's the else branch confirming silence
-    vort_log = [l for l in log if "漩渦" in l]
-    # Should contain the "不產出" line and nothing else
-    assert any("4" in l and "不產出" in l for l in vort_log), (
-        f"漩渦 4-team: should log '不產出'. log={vort_log}"
-    )
-    # No NP or troop increment logs for 漩渦
-    production_log = [l for l in vort_log if "+" in l]
-    assert production_log == [], (
-        f"漩渦 4-team: no production should be logged. Got: {production_log}"
-    )
-
-
-def test_d_vortex_3_teams_odd_grants_np():
-    """
-    漩渦 with 3 teams (odd) → grants 2000 NP proportionally. Contrast with 4-team case.
-    """
-    s = make_state(round_num=2, teams=["1", "2", "3"])
-    s.zones["漩渦"] = ZoneState(troops={"1": 1000, "2": 500, "3": 500})
-    for t in ["1","2","3"]:
-        s.national_power[t] = 0
-
-    new_s, log, _ = run_round(s, {})
-
-    vort_log = [l for l in log if "漩渦" in l]
-    assert any("奇數" in l for l in vort_log), (
-        f"漩渦 3-team: should log '奇數國'. log={vort_log}"
-    )
-    # T1 gets floor(2000 * 1000/2000) = 1000 NP
-    t1_np_gain = new_s.national_power.get("1", 0)
-    assert t1_np_gain >= 1000, (
-        f"漩渦 3-team: T1 should gain >= 1000 NP. got {t1_np_gain}"
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -494,17 +427,20 @@ def test_f_multi_source_union_attack_troops_sum():
     assert dv.forced_owner in ("1", "2"), (
         f"Coalition (T1+T2) should capture 龍族火山. forced_owner={dv.forced_owner}"
     )
-    # T1 troops = 250 (sent) + bonus (floor(100*0.2)=20) = 270
-    # T2 troops = 200 (sent) + 20 = 220
-    bonus = math.floor(100 * 0.20)
+    # New Situation A formula:
+    # survival = max(0, winner_total - max(defender_total, other_attackers))
+    #          = max(0, 450 - max(100, 0)) = 350
+    # T1 share = _ceil100(350 * 250/450) = _ceil100(194.4) = 200
+    # T2 share = _ceil100(350 * 200/450) = _ceil100(155.6) = 200
+    # T1 is leader (most troops: 250 > 200) → gets max(200, 500) = 500
     t1_troops = dv.troops.get("1", 0)
     t2_troops = dv.troops.get("2", 0)
-    assert t1_troops == 250 + bonus, (
-        f"T1 should have {250 + bonus} troops in 龍族火山, got {t1_troops}. "
+    assert t1_troops == 500, (
+        f"T1 (leader) should have 500 troops in 龍族火山, got {t1_troops}. "
         f"troops={dv.troops}"
     )
-    assert t2_troops == 200 + bonus, (
-        f"T2 should have {200 + bonus} troops in 龍族火山, got {t2_troops}. "
+    assert t2_troops == 200, (
+        f"T2 should have 200 troops in 龍族火山, got {t2_troops}. "
         f"troops={dv.troops}"
     )
 
@@ -766,22 +702,3 @@ def test_5op_limit_exact_boundary():
     )
 
 
-def test_vortex_2_teams_even_grants_troops():
-    """
-    漩渦 with 2 teams (even, not 4) → grants 2000 troop bonus proportionally.
-    """
-    s = make_state(round_num=2, teams=["1", "2"])
-    s.zones["漩渦"] = ZoneState(troops={"1": 1000, "2": 1000})
-
-    new_s, log, _ = run_round(s, {})
-
-    vort_log = [l for l in log if "漩渦" in l]
-    assert any("偶數" in l for l in vort_log), (
-        f"漩渦 2-team: should log '偶數國'. log={vort_log}"
-    )
-    # Each team gets floor(2000 * 1000/2000) = 1000 troop bonus
-    vort = new_s.zones["漩渦"]
-    # Before: 1000 + 1000 bonus = 2000 each
-    assert vort.troops.get("1", 0) == 2000, (
-        f"漩渦 2-team: T1 should have 2000 troops (1000+1000). got {vort.troops}"
-    )

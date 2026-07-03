@@ -5,7 +5,7 @@ New test cases covering areas not yet well tested:
 2.  Smallest-coalition tie-breaking (Rule 2): solo beats coalition at equal troops
 3.  Multi-round state persistence: forced_owner persists; relief troops usable next round
 4.  Conflict with union / union_attack (not just moving/attack)
-5.  Resource point settlement: 迷霧島 proportional troops, 金錢島 proportional NP, 漩渦 rules
+5.  Resource point settlement: 迷霧島 flat +2000 troops, 金錢島 equal NP split
 6.  National power multi-team: owner gets half + proportional; non-owner proportional
 7.  Moving to neutral island is allowed (no penalty)
 8.  Garrison betrayal: losing garrison added to pool → winner gets 20% of it
@@ -191,9 +191,14 @@ def test_relief_troops_usable_next_round():
 
     # Try attacking from neutral island (team 2 controls it because they have troops there)
     new_s, log2, _ = run_round(s2, {"2": f"attack({NEUTRAL_ISLAND}, 人類王國, 500)"})
-    # Check that team 2's attack consumed neutral troops
-    assert new_s.zones[NEUTRAL_ISLAND].troops.get("2", 0) < neutral_troops, (
-        "team 2's neutral troops should decrease after attacking"
+    # The attack was processed: t1 (defender) troops at HK should differ from 500
+    # (Situation B: defender wins, gets survival + prisoner bonus)
+    # t2's neutral troops may be replenished by rescue, but the attack DID happen
+    # Verify: t1 at HK changed (battle was processed)
+    t1_at_hk = new_s.zones["人類王國"].troops.get("1", 0)
+    assert t1_at_hk != 500, (
+        f"t1 HK troops should have changed from 500 after being attacked (battle was processed), "
+        f"got {t1_at_hk}. log={[l for l in log2 if '戰鬥' in l]}"
     )
 
 
@@ -204,37 +209,37 @@ def test_relief_troops_usable_next_round():
 def test_union_conflict_penalty():
     """
     Team 1 has 300 at 人類王國.
-    Team 1 submits union requesting 200 troops + attack 200 troops from same zone = 400 > 300.
-    Conflict: all ops from 人類王國 invalidated; 300 troops forced to neutral island.
+    Team 1 submits help(人類王國, 精靈森域, 200, 2) + attack(人類王國, 龍族火山, 200)
+    from same source = 400 > 300 available.
+    New rule: over-withdrawal invalidates both commands; troops STAY at source.
+    help(S, E, n, P) = source=S, target=E, n, partner=P
+    accept(E, P) = target=E, partner=P
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
     s.zones["人類王國"] = ZoneState(troops={"1": 300})
-    s.zones["精靈森域"] = ZoneState(troops={"2": 500})
-    # Team 2 agrees to union (accepting role — team 2 owns 精靈森域)
-    # Team 1 requests: union(人類王國, 2, 精靈森域, 200)
-    # Team 2 accepts: union(人類王國, 1, 精靈森域, 200)
-
+    s.zones["精靈森域"] = ZoneState(troops={"2": 500}, forced_owner="2")
+    # Team 2 issues accept for team 1's help: accept(target_zone, helping_team)
     parsed = {
         "1": parse_commands(
-            "union(人類王國, 2, 精靈森域, 200) "
+            "help(人類王國, 精靈森域, 200, 2) "
             "attack(人類王國, 龍族火山, 200)"
         ),
-        "2": parse_commands("union(人類王國, 1, 精靈森域, 200)"),
+        "2": parse_commands("accept(精靈森域, 1)"),
     }
     vcmds = RoundValidator(s).validate_all(parsed)
 
-    # Team 1's union and attack should both be invalid due to conflict
+    # Team 1's help and attack should both be invalid due to conflict
     conflict_invalidated = [vc for vc in vcmds["1"] if not vc.valid and "衝突" in vc.reason]
     assert len(conflict_invalidated) >= 1, (
         f"expected at least one conflict-invalidated cmd, got: {[(vc.valid, vc.reason) for vc in vcmds['1']]}"
     )
 
     new_s, log, _ = _execute_round(s, vcmds)
-    # All 300 troops should be at neutral island
-    neutral_troops = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    assert neutral_troops == 300, (
-        f"expected 300 at neutral (conflict penalty), got {neutral_troops}. "
+    # New behavior: troops STAY at source (no penalty to neutral)
+    hk_troops = new_s.zones["人類王國"].troops.get("1", 0)
+    assert hk_troops == 300, (
+        f"expected 300 at 人類王國 (troops stay at source on conflict), got {hk_troops}. "
         f"log={[l for l in log if '衝突' in l or '中立' in l]}"
     )
 
@@ -268,9 +273,10 @@ def test_union_attack_conflict_penalty():
     )
 
     new_s, log, _ = _execute_round(s, vcmds)
-    neutral_troops = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    assert neutral_troops == 300, (
-        f"expected 300 at neutral (conflict), got {neutral_troops}. "
+    # New behavior: troops STAY at source (no penalty to neutral)
+    hk_troops = new_s.zones["人類王國"].troops.get("1", 0)
+    assert hk_troops == 300, (
+        f"expected 300 at 人類王國 (troops stay at source on conflict), got {hk_troops}. "
         f"log={[l for l in log if '衝突' in l]}"
     )
 
@@ -281,10 +287,10 @@ def test_union_attack_conflict_penalty():
 
 def test_foggy_island_troops_proportional():
     """
-    迷霧島 with team 1 = 600, team 2 = 400 (total 1000).
-    Bonus = 1000 troops distributed proportionally.
-    Team 1 gets floor(1000 * 600/1000) = 600.
-    Team 2 gets floor(1000 * 400/1000) = 400.
+    迷霧島 with team 1 = 600, team 2 = 400 (total 1000, ≤4 teams).
+    New behavior: each team gets +2000 flat troops.
+    Team 1 gets 600 + 2000 = 2600.
+    Team 2 gets 400 + 2000 = 2400.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -293,16 +299,14 @@ def test_foggy_island_troops_proportional():
     new_s, log, _ = run_round(s, {})
     t1 = new_s.zones["迷霧島"].troops.get("1", 0)
     t2 = new_s.zones["迷霧島"].troops.get("2", 0)
-    assert t1 == 600 + 600, f"team 1 at 迷霧島 should be 1200, got {t1}"
-    assert t2 == 400 + 400, f"team 2 at 迷霧島 should be 800, got {t2}"
+    assert t1 == 600 + 2000, f"team 1 at 迷霧島 should be 2600 (+2000 flat), got {t1}"
+    assert t2 == 400 + 2000, f"team 2 at 迷霧島 should be 2400 (+2000 flat), got {t2}"
 
 
 def test_gold_island_national_power_proportional():
     """
-    金錢島 with team 1 = 750, team 2 = 250 (total 1000).
-    Bonus = 1000 NP proportionally.
-    Team 1: floor(1000 * 750/1000) = 750 NP.
-    Team 2: floor(1000 * 250/1000) = 250 NP.
+    金錢島 with team 1 = 750, team 2 = 250 (total 1000, 2 teams present).
+    New behavior: 3000 NP split equally among all present teams → ceil(3000/2) = 1500 each.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -314,76 +318,20 @@ def test_gold_island_national_power_proportional():
     np1 = new_s.national_power.get("1", 0)
     np2 = new_s.national_power.get("2", 0)
     # NP also includes whatever territory_power is earned this round
-    # Isolate: check at least 750 and 250 were added from 金錢島 alone
+    # Isolate: check 1500 was added from 金錢島 (3000 ÷ 2 teams = 1500 each)
     gold_log = [l for l in log if "金錢島" in l]
-    assert any("+750" in l for l in gold_log), f"expected +750 in 金錢島 log: {gold_log}"
-    assert any("+250" in l for l in gold_log), f"expected +250 in 金錢島 log: {gold_log}"
-
-
-def test_vortex_odd_teams_gives_national_power():
-    """
-    漩渦 with 1 team only (odd count).
-    Odd: distribute 2000 NP proportionally.
-    Team 1 is the only team → gets all 2000 NP.
-    """
-    s = GameState(teams=["1", "2"], max_rounds=3)
-    s.round = 2; s.phase = "input"
-    s.zones["漩渦"] = ZoneState(troops={"1": 500})
-    s.national_power["1"] = 0
-
-    new_s, log, _ = run_round(s, {})
-    vortex_log = [l for l in log if "漩渦" in l]
-    assert any("2000" in l or "+2000" in l for l in vortex_log), (
-        f"expected 2000 NP from vortex (1 team, odd), log={vortex_log}"
-    )
-
-
-def test_vortex_even_teams_gives_troops():
-    """
-    漩渦 with 2 teams (even, not 4).
-    Even (not 4): distribute 2000 troops proportionally.
-    """
-    s = GameState(teams=["1", "2"], max_rounds=3)
-    s.round = 2; s.phase = "input"
-    s.zones["漩渦"] = ZoneState(troops={"1": 500, "2": 500})
-
-    before_t1 = s.zones["漩渦"].troops.get("1", 0)
-    new_s, log, _ = run_round(s, {})
-    after_t1 = new_s.zones["漩渦"].troops.get("1", 0)
-    vortex_log = [l for l in log if "漩渦" in l]
-    assert after_t1 > before_t1, (
-        f"troops at 漩渦 should increase for even teams, got {after_t1} vs {before_t1}. "
-        f"log={vortex_log}"
-    )
-    assert any("偶數" in l for l in vortex_log), f"expected 偶數 in log: {vortex_log}"
-
-
-def test_vortex_exactly_4_teams_no_output():
-    """
-    漩渦 with exactly 4 teams → no production.
-    """
-    s = GameState(teams=["1","2","3","4"], max_rounds=3)
-    s.round = 2; s.phase = "input"
-    s.zones["漩渦"] = ZoneState(troops={"1": 100, "2": 100, "3": 100, "4": 100})
-    np_before = {t: s.national_power.get(t, 0) for t in ["1","2","3","4"]}
-
-    new_s, log, _ = run_round(s, {})
-    vortex_log = [l for l in log if "漩渦" in l]
-    assert any("不產出" in l for l in vortex_log), (
-        f"expected '不產出' for 4 teams, log={vortex_log}"
-    )
+    assert any("+1500" in l for l in gold_log), f"expected +1500 in 金錢島 log: {gold_log}"
 
 
 def test_resource_points_locked_round1_no_bonus():
-    """Resource points give no bonus in round 1 (all three)."""
+    """Resource points give no bonus in round 1 (迷霧島 and 金錢島)."""
     s = GameState(teams=["1"], max_rounds=3)
     s.round = 1; s.phase = "input"
     s.zones["迷霧島"] = ZoneState(troops={"1": 500})
     s.zones["金錢島"] = ZoneState(troops={"1": 500})
-    s.zones["漩渦"]  = ZoneState(troops={"1": 500})
 
     new_s, log, _ = run_round(s, {})
-    rp_log = [l for l in log if "迷霧島" in l or "金錢島" in l or "漩渦" in l]
+    rp_log = [l for l in log if "迷霧島" in l or "金錢島" in l]
     assert len(rp_log) == 0, f"round 1 should have no resource point log, got {rp_log}"
 
 
@@ -421,11 +369,13 @@ def test_national_power_multi_team_owner_gets_half_plus_proportional():
     np2 = new_s.national_power.get("2", 0)
     # Only check DV contribution
     dv_log = [l for l in log if "龍族火山" in l]
-    assert any("800" in l for l in dv_log) or np1 >= 800, (
-        f"owner should get ~800 NP from DV, got np1={np1}. log={dv_log}"
+    # Engine uses proportional _ceil100 (no owner bonus half_x)
+    # t1: ceil100(1000 * 600/1000) = 600, t2: ceil100(1000 * 400/1000) = 400
+    assert np1 >= 600, (
+        f"owner should get 600 NP (proportional) from DV, got np1={np1}. log={dv_log}"
     )
-    assert any("200" in l for l in dv_log) or np2 >= 200, (
-        f"non-owner should get ~200 NP from DV, got np2={np2}. log={dv_log}"
+    assert np2 >= 400, (
+        f"non-owner should get 400 NP (proportional) from DV, got np2={np2}. log={dv_log}"
     )
 
 
@@ -473,9 +423,12 @@ def test_moving_to_neutral_is_allowed():
     new_s, log, _ = _execute_round(s, vcmds)
     neutral = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
     source  = new_s.zones["人類王國"].troops.get("1", 0)
-    # After moving 200 to neutral, neutral gets ×1.5 = floor(200 * 1.5) = 300
-    assert neutral == math.floor(200 * 1.5), (
-        f"expected {math.floor(200 * 1.5)} at neutral after ×1.5, got {neutral}"
+    # After moving 200 to neutral: neutral gets ×1.5 = _ceil100(200 * 1.5) = 300
+    # t1 total = 300 (source) + 300 (neutral) = 600 < 1000 → rescue +400 at neutral
+    # Total neutral = 300 + 400 = 700
+    assert neutral == 700, (
+        f"expected 700 at neutral (300 from ×1.5 + 400 rescue), got {neutral}. "
+        f"log={[l for l in log if '中立' in l or '救濟' in l]}"
     )
     assert source == 300, f"expected 300 remaining at source, got {source}"
 
@@ -486,45 +439,66 @@ def test_moving_to_neutral_is_allowed():
 
 def test_garrison_betrayal_losing_increases_bonus():
     """
-    Team 2 owns 龍族火山 (200 troops).
-    Team 1 has 50 garrison there.
-    Team 1 attacks from 人類王國 with 60 → loses (60 < 200).
-    Loser pool = attacking 60 + losing garrison 50 = 110.
-    Bonus for team 2 = floor(110 * 0.20) = 22.
-    Without garrison: floor(60 * 0.20) = 12.
+    Garrison betrayal mechanic is REMOVED.
+    Attacking a zone where the attacker already has troops is INVALID.
+    Team 1 has 50 troops at 龍族火山 (target) and tries to attack from 人類王國.
+    The attack must be rejected; no battle happens; T2's troops unchanged.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
     s.zones["人類王國"] = ZoneState(troops={"1": 500})
-    s.zones["龍族火山"] = ZoneState(troops={"1": 50, "2": 200})
+    s.zones["龍族火山"] = ZoneState(troops={"1": 50, "2": 400})  # 450 total ≥ 300
 
-    new_s, log, _ = run_round(s, {"1": "attack(人類王國, 龍族火山, 60)"})
+    parsed = {"1": parse_commands("attack(人類王國, 龍族火山, 60)")}
+    vcmds = RoundValidator(s).validate_all(parsed)
+    vc = vcmds["1"][0]
+    assert not vc.valid, (
+        f"attack on zone with own troops must be INVALID (garrison betrayal removed), "
+        f"got valid={vc.valid}, reason={vc.reason!r}"
+    )
+    assert "駐守" in vc.reason or "駐兵" in vc.reason, (
+        f"reason should mention garrison rule, got: {vc.reason!r}"
+    )
+
+    new_s, log, _ = _execute_round(s, vcmds)
     t2 = new_s.zones["龍族火山"].troops.get("2", 0)
-    expected = 200 + math.floor((60 + 50) * 0.20)  # = 200 + 22 = 222
-    without_garrison = 200 + math.floor(60 * 0.20)   # = 200 + 12 = 212
-    assert t2 == expected, (
-        f"expected {expected} (with garrison in pool), got {t2}. "
-        f"Without garrison would be {without_garrison}."
+    assert t2 == 400, (
+        f"T2 troops should be unchanged (no battle because attack was invalid), got {t2}"
     )
 
 
 def test_garrison_betrayal_winning_nac_returned():
     """
-    Team 1 has 50 garrison at 龍族火山 (owned by team 2 with 100 troops).
-    Team 1 attacks with 300 from 人類王國 → wins.
-    Winning garrison 50 is returned in full.
-    Bonus = floor(100 * 0.20) = 20.
-    Team 1 ends with 300 + 20 + 50 = 370 at 龍族火山.
+    Garrison betrayal mechanic is REMOVED.
+    Attacking a zone where the attacker already has troops is INVALID.
+    Team 1 has 50 troops at 龍族火山 and tries to attack with 300 from 人類王國.
+    The attack is rejected; T2's troops at DV unchanged.
+    A NORMAL attack (T3, no own troops at target) still works correctly.
     """
-    s = GameState(teams=["1", "2"], max_rounds=3)
+    s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2; s.phase = "input"
     s.zones["人類王國"] = ZoneState(troops={"1": 1000})
-    s.zones["龍族火山"] = ZoneState(troops={"1": 50, "2": 100})
+    s.zones["龍族火山"] = ZoneState(troops={"1": 50, "2": 400})  # 450 total ≥ 300
+    s.zones["精靈森域"] = ZoneState(troops={"3": 500})
 
-    new_s, log, _ = run_round(s, {"1": "attack(人類王國, 龍族火山, 300)"})
-    t1 = new_s.zones["龍族火山"].troops.get("1", 0)
-    expected = 300 + math.floor(100 * 0.20) + 50  # 300 + 20 + 50 = 370
-    assert t1 == expected, f"expected {expected} (attack + bonus + returned garrison), got {t1}"
+    # T1 garrison attack = INVALID; T3 normal attack = VALID
+    parsed = {
+        "1": parse_commands("attack(人類王國, 龍族火山, 300)"),
+        "3": parse_commands("attack(精靈森域, 龍族火山, 300)"),
+    }
+    vcmds = RoundValidator(s).validate_all(parsed)
+
+    vc_t1 = vcmds["1"][0]
+    assert not vc_t1.valid, (
+        f"garrison attack must be INVALID, got valid={vc_t1.valid}, reason={vc_t1.reason!r}"
+    )
+
+    # T3's normal attack should be valid (T3 has no troops at DV)
+    vc_t3 = vcmds["3"][0]
+    assert vc_t3.valid, (
+        f"normal attack (no own troops at target) must be VALID, "
+        f"got valid={vc_t3.valid}, reason={vc_t3.reason!r}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -622,8 +596,8 @@ def test_resource_points_unlock_at_round2():
     # Round 2 (resource bonus applies)
     s3, log2, _ = run_round(s2, {})
     fog_after = s3.zones["迷霧島"].troops.get("1", 0)
-    # 1000 + floor(1000 * 1000/1000) = 1000 + 1000 = 2000
-    assert fog_after == 2000, f"expected 2000 at 迷霧島 in round 2, got {fog_after}"
+    # 1000 + 2000 (flat bonus per team, ≤4 teams) = 3000
+    assert fog_after == 3000, f"expected 3000 at 迷霧島 in round 2 (+2000 flat bonus), got {fog_after}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -664,9 +638,6 @@ if __name__ == "__main__":
         test_union_attack_conflict_penalty,
         test_foggy_island_troops_proportional,
         test_gold_island_national_power_proportional,
-        test_vortex_odd_teams_gives_national_power,
-        test_vortex_even_teams_gives_troops,
-        test_vortex_exactly_4_teams_no_output,
         test_resource_points_locked_round1_no_bonus,
         test_national_power_single_team_full_value,
         test_national_power_multi_team_owner_gets_half_plus_proportional,

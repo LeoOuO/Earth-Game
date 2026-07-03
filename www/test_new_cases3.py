@@ -65,8 +65,7 @@ def test_parse_n_negative_invalid():
 def test_parse_allies_duplicates():
     """
     union_attack(HK, [2,2,3], ELF, 100) — duplicate ally '2' in the list.
-    The parser calls _parse_allies which checks ALL_TEAMS membership only,
-    so duplicates are allowed at parse level (each entry is a valid team).
+    union_attack is a legacy alias → parsed as attack(S, E, n, [P]).
     Verify it either parses OK or fails gracefully — no crash.
     """
     from game.parser import parse_command
@@ -74,9 +73,9 @@ def test_parse_allies_duplicates():
     # Either ok or not — just must not crash
     assert isinstance(result.ok, bool), "result.ok should be a bool, no crash"
     if result.ok:
-        # If parsed, allies list may contain duplicates
+        # If parsed, union_attack alias maps to op="attack"
         assert result.command is not None
-        assert result.command.op == "union_attack"
+        assert result.command.op == "attack"
     else:
         assert result.error, "failed parse must have an error message"
 
@@ -87,61 +86,59 @@ def test_parse_allies_duplicates():
 
 def test_union_both_requesting_no_match():
     """
-    A wants to move to B's territory, B wants to move to A's territory.
-    They don't share the same (S, E, n) so they don't match.
-    Both stay pending; neither executes.
+    T1 sends help(S_A, E_B, 80, 2) — helping T2 at E_B (T2 must accept).
+    T2 sends help(S_B, E_A, 80, 1) — helping T1 at E_A (T1 must accept).
+    Neither accepts the other → neither help is matched (help_matched=False).
+    Unmatched help troops stay at source (not moved).
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
     # T1 owns 人類王國, T2 owns 精靈森域
     s.zones["人類王國"] = ZoneState(troops={"1": 500}, forced_owner="1")
     s.zones["精靈森域"] = ZoneState(troops={"2": 500}, forced_owner="2")
-    s.zones["龍族火山"] = ZoneState(troops={"1": 200})
+    s.zones["龍族火山"] = ZoneState(troops={"1": 200}, forced_owner="1")
 
-    # T1 wants to move into T2's territory (精靈森域)
-    # T2 wants to move into T1's territory (人類王國)
-    # Different S and E so they won't match
+    # T1 wants to help T2 at 精靈森域 (but T2 doesn't accept)
+    # T2 wants to help T1 at 人類王國 (but T1 doesn't accept)
     parsed = {
-        "1": parse_commands("union(人類王國, 2, 精靈森域, 80)"),
-        "2": parse_commands("union(精靈森域, 1, 人類王國, 80)"),
+        "1": parse_commands("help(人類王國, 精靈森域, 80, 2)"),
+        "2": parse_commands("help(精靈森域, 人類王國, 80, 1)"),
     }
     vcmds = RoundValidator(s).validate_all(parsed)
 
     vc1 = vcmds["1"][0]
     vc2 = vcmds["2"][0]
 
-    # Both should be valid parse-wise (union(S, P, E, n): T1 requests to move to P's territory)
-    # vc1: T1 requests union(S=人類王國, P=2, E=精靈森域, n=80) → requesting mode
-    # vc2: T2 requests union(S=精靈森域, P=1, E=人類王國, n=80) → requesting mode
-    # They need same S, E, n AND cross-matching P — here S/E are swapped → no match
+    # Both help commands are valid at parse/validation level (but unmatched)
+    assert vc1.valid, f"T1's help should be valid, reason={vc1.reason!r}"
+    assert vc2.valid, f"T2's help should be valid, reason={vc2.reason!r}"
 
-    # Both pending, neither confirmed
-    assert vc1.union_status == "pending", (
-        f"T1's union should be pending (no match), got {vc1.union_status!r}"
+    # Neither is matched (no accept issued by the other side)
+    assert not vc1.help_matched, (
+        f"T1's help should NOT be matched (no accept from T2), got help_matched={vc1.help_matched}"
     )
-    assert vc2.union_status == "pending", (
-        f"T2's union should be pending (no match), got {vc2.union_status!r}"
+    assert not vc2.help_matched, (
+        f"T2's help should NOT be matched (no accept from T1), got help_matched={vc2.help_matched}"
     )
 
     new_s, log, _ = _execute_round(s, vcmds)
-    # Pending unions don't move troops; source zones unchanged
-    # T1's troops at 人類王國 stay (no actual movement)
+    # Unmatched help → troops do NOT move
     t1_at_hk = new_s.zones["人類王國"].troops.get("1", 0)
     assert t1_at_hk == 500, (
-        f"T1's troops should not move on pending union, got {t1_at_hk}"
+        f"T1's troops should not move on unmatched help, got {t1_at_hk}"
     )
-    # T2's troops at 精靈森域 stay
     t2_at_elf = new_s.zones["精靈森域"].troops.get("2", 0)
     assert t2_at_elf == 500, (
-        f"T2's troops should not move on pending union, got {t2_at_elf}"
+        f"T2's troops should not move on unmatched help, got {t2_at_elf}"
     )
 
 
 def test_union_confirmed_both_sides_move():
     """
-    A requests union(S_A, B, E_B, 80) — A moves 80 troops from S_A to E_B (B's territory).
-    B accepts union(S_A, A, E_B, 80) — B issues an accepting union (same S, E, n, P cross-match).
-    Confirmed: A's 80 troops move from S_A to E_B. B's accepting costs nothing.
+    T1 sends help(S_A, E_B, 80, 2) — T1 wants to send 80 troops to T2's territory 精靈森域.
+    T2 sends accept(E_B, 1)        — T2 authorizes T1 to help at 精靈森域.
+    Matched: T1's help is confirmed (help_matched=True). 80 troops move from S_A to E_B.
+    T2's accept costs nothing.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -150,39 +147,39 @@ def test_union_confirmed_both_sides_move():
     # T1 has troops at 人類王國 (source)
     s.zones["人類王國"] = ZoneState(troops={"1": 200}, forced_owner="1")
 
-    # T1 requests: move 80 from 人類王國 to 精靈森域 (T2's zone)
-    # T2 accepts: same (S=人類王國, E=精靈森域, n=80, P=T1 cross-matches T2)
+    # T1: help(source, target, n, partner)
+    # T2: accept(target, helper_team)
     parsed = {
-        "1": parse_commands("union(人類王國, 2, 精靈森域, 80)"),
-        "2": parse_commands("union(人類王國, 1, 精靈森域, 80)"),
+        "1": parse_commands("help(人類王國, 精靈森域, 80, 2)"),
+        "2": parse_commands("accept(精靈森域, 1)"),
     }
     vcmds = RoundValidator(s).validate_all(parsed)
 
-    vc1 = vcmds["1"][0]
-    vc2 = vcmds["2"][0]
+    vc1 = vcmds["1"][0]  # T1's help
+    vc2 = vcmds["2"][0]  # T2's accept
 
-    assert vc1.union_status == "confirmed", (
-        f"T1's union should be confirmed, got {vc1.union_status!r}. "
-        f"role={vc1.union_role!r}, valid={vc1.valid}, reason={vc1.reason!r}"
-    )
-    assert vc2.union_status == "confirmed", (
-        f"T2's union should be confirmed, got {vc2.union_status!r}. "
-        f"role={vc2.union_role!r}, valid={vc2.valid}, reason={vc2.reason!r}"
-    )
+    # Both commands are valid
+    assert vc1.valid, f"T1's help should be valid, reason={vc1.reason!r}"
+    assert vc2.valid, f"T2's accept should be valid, reason={vc2.reason!r}"
 
-    # T1 is requesting (moves troops), T2 is accepting (no cost)
-    assert vc1.union_role == "requesting", f"T1 should be requesting, got {vc1.union_role!r}"
-    assert vc2.union_role == "accepting", f"T2 should be accepting, got {vc2.union_role!r}"
+    # T1's help is matched (T2 accepted)
+    assert vc1.help_matched, (
+        f"T1's help should be matched (T2 issued accept), got help_matched={vc1.help_matched}"
+    )
+    assert vc1.help_partner == "2", f"T1 help_partner should be '2', got {vc1.help_partner!r}"
 
     new_s, log, _ = _execute_round(s, vcmds)
 
-    # T1 moves 80 from 人類王國 to 精靈森域
+    # T1 moved 80 out of 人類王國 → 120 remaining. But 120 < 300 → Phase 1.5 clears HK.
     t1_at_hk = new_s.zones["人類王國"].troops.get("1", 0)
     t1_at_elf = new_s.zones["精靈森域"].troops.get("1", 0)
-    assert t1_at_hk == 120, f"T1 should have 200-80=120 at 人類王國, got {t1_at_hk}"
-    assert t1_at_elf == 80, f"T1 should have 80 at 精靈森域, got {t1_at_elf}"
+    assert t1_at_hk == 0, (
+        f"T1 should have 0 at 人類王國: 200-80=120 remaining, but Phase 1.5 clears "
+        f"zones with < 300 troops. got {t1_at_hk}"
+    )
+    assert t1_at_elf == 80, f"T1 should have 80 at 精靈森域 (help moved there), got {t1_at_elf}"
 
-    # T2 stays unchanged at 精靈森域 (accepting costs nothing)
+    # T2 stays at 精靈森域 (accepting costs nothing, values may differ after NP calc)
     t2_at_elf = new_s.zones["精靈森域"].troops.get("2", 0)
     assert t2_at_elf == 300, f"T2 should still have 300 at 精靈森域, got {t2_at_elf}"
 
@@ -190,21 +187,21 @@ def test_union_confirmed_both_sides_move():
 def test_union_and_attack_same_source_both_valid():
     """
     A has 150 at S.
-    A submits union(S, B, E_B, 100) (requesting) + attack(S, E2, 50).
+    A submits help(S, E_B, 100, 2) (requesting, uses 100 troops) + attack(S, E2, 50).
     100+50=150 = available → no conflict. Both valid.
     """
     s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2; s.phase = "input"
     # T1 has 150 at 人類王國
     s.zones["人類王國"] = ZoneState(troops={"1": 150}, forced_owner="1")
-    # T2 owns 精靈森域 (target for union)
+    # T2 owns 精靈森域 (target for help)
     s.zones["精靈森域"] = ZoneState(troops={"2": 300}, forced_owner="2")
     # T3 owns 龍族火山 (target for attack)
     s.zones["龍族火山"] = ZoneState(troops={"3": 200}, forced_owner="3")
-    # T2 must also submit accepting union for it to be confirmed, but we test validation only
+    # T2 does not need to accept for validation purposes — we test validation only
     parsed = {
         "1": parse_commands(
-            "union(人類王國, 2, 精靈森域, 100) "
+            "help(人類王國, 精靈森域, 100, 2) "
             "attack(人類王國, 龍族火山, 50)"
         ),
     }
@@ -251,8 +248,9 @@ def test_garrison_pre_round_only_no_same_round_moving():
 def test_garrison_and_union_attack():
     """
     T1 has garrison at E (50 troops pre-round at 精靈森域, which T2 owns).
-    T1 submits union_attack targeting 精靈森域.
-    Garrison betrayal should trigger (駐守叛變 log message appears).
+    T1 submits union_attack targeting 精靈森域 (where T1 already has troops).
+    Garrison betrayal mechanic is REMOVED — attacking a zone where you have
+    troops is now simply INVALID (command rejected at validation).
     """
     s = GameState(teams=["1", "2", "3"], max_rounds=3)
     s.round = 2; s.phase = "input"
@@ -262,17 +260,29 @@ def test_garrison_and_union_attack():
     s.zones["人類王國"]  = ZoneState(troops={"1": 500}, forced_owner="1")
     s.zones["龍族火山"]  = ZoneState(troops={"3": 400}, forced_owner="3")
 
-    # T1 + T3 union_attack 精靈森域
-    new_s, log, _ = run_round(s, {
-        "1": "union_attack(人類王國, [3], 精靈森域, 300)",
-        "3": "union_attack(龍族火山, [1], 精靈森域, 200)",
-    })
+    # T1 tries union_attack on 精靈森域 but has garrison there → INVALID
+    # T3 tries union_attack on 精靈森域 (T3 has no troops there) → valid
+    parsed = {
+        "1": parse_commands("union_attack(人類王國, [3], 精靈森域, 300)"),
+        "3": parse_commands("union_attack(龍族火山, [1], 精靈森域, 200)"),
+    }
+    vcmds = RoundValidator(s).validate_all(parsed)
 
-    # Garrison betrayal log must mention T1's n_Ac and 精靈森域
-    betrayal_logs = [l for l in log if "駐守叛變" in l]
-    assert any("1" in l for l in betrayal_logs), (
-        f"Garrison-betrayal log should mention T1's garrison. "
-        f"All betrayal logs: {betrayal_logs}"
+    vc1 = vcmds["1"][0]
+    vc3 = vcmds["3"][0]
+
+    # T1's attack on 精靈森域 is INVALID (has own troops there — garrison betrayal removed)
+    assert not vc1.valid, (
+        f"T1 attacking a zone where it has garrison should be INVALID (garrison betrayal removed). "
+        f"got valid={vc1.valid}, reason={vc1.reason!r}"
+    )
+    assert "駐守叛變" in vc1.reason or "駐兵" in vc1.reason or "garrison" in vc1.reason.lower() or "已廢除" in vc1.reason, (
+        f"Reason should mention garrison rule removal, got: {vc1.reason!r}"
+    )
+
+    # T3's attack is valid (no pre-round troops at 精靈森域)
+    assert vc3.valid, (
+        f"T3's attack should be valid (no garrison there), reason={vc3.reason!r}"
     )
 
 
@@ -329,31 +339,35 @@ def test_empty_round_advances():
     """
     All teams submit nothing.
     Round advances: neutral island ×1.5 applies, national power distributed.
+    Note: Phase 1.5 clears zones with < 300 troops, so T2 needs >= 300 at 人類王國
+    to earn NP.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
     # T1 has troops at neutral island (will get ×1.5 boost)
     s.zones[NEUTRAL_ISLAND] = ZoneState(troops={"1": 200})
-    # T2 owns 人類王國 (will earn NP)
-    s.zones["人類王國"] = ZoneState(troops={"2": 100}, forced_owner="2")
+    # T2 owns 人類王國 with 400 troops (≥ 300, survives Phase 1.5, will earn NP)
+    s.zones["人類王國"] = ZoneState(troops={"2": 400}, forced_owner="2")
 
     new_s, log, _ = run_round(s, {})
 
     # Round must advance
     assert new_s.round == 3, f"Round should advance to 3, got {new_s.round}"
 
-    # Neutral island ×1.5 applied to T1
+    # Neutral island ×1.5 applied to T1 (200 → ceil100(300)=300), then rescue rule:
+    # T1 total = 300 < 1000 → topped up to 1000 at neutral island.
     t1_neutral = new_s.zones[NEUTRAL_ISLAND].troops.get("1", 0)
-    expected_neutral = math.floor(200 * 1.5)
+    # After ×1.5: ceil100(200*1.5)=300; T1 total=300 < 1000 → rescue to 1000
+    expected_neutral = 1000
     assert t1_neutral == expected_neutral, (
-        f"Neutral island ×1.5 should apply: expected {expected_neutral}, got {t1_neutral}"
+        f"Neutral island ×1.5 should apply then rescue to 1000: expected {expected_neutral}, got {t1_neutral}"
     )
 
-    # T2 earned NP from 人類王國
+    # T2 earned NP from 人類王國 (400 troops ≥ 300, zone survives Phase 1.5)
     x = TERRITORY_POWER["人類王國"]
     np2 = new_s.national_power.get("2", 0)
     assert np2 == x, (
-        f"T2 should earn {x} NP from 人類王國, got {np2}"
+        f"T2 should earn {x} NP from 人類王國 (400 troops survives Phase 1.5), got {np2}"
     )
 
 
@@ -403,43 +417,48 @@ def test_moving_to_enemy_zone_with_own_garrison_valid():
 
 def test_attack_resource_point_round2_troops_lost():
     """
-    T1 attacks 迷霧島 in round 2. Troops are lost (penalty). No battle at 迷霧島.
+    T1 attacks 迷霧島 in round 2.
+    In the current engine: attacking resource points is valid (no penalty, no warning).
+    Troops depart source, battle resolves at 迷霧島 (Situation A).
+    After Phase 5 (resource point settle), 迷霧島 gives +2000 troops to occupants.
     """
     s = GameState(teams=["1", "2"], max_rounds=3)
     s.round = 2; s.phase = "input"
     s.zones["人類王國"] = ZoneState(troops={"1": 500}, forced_owner="1")
     s.zones["精靈森域"] = ZoneState(troops={"2": 200})
 
-    # Round 2 allows resource point attacks but penalizes them
+    # Round 2 allows resource point attacks — valid, no penalty, no warning
     parsed = {"1": parse_commands("attack(人類王國, 迷霧島, 100)")}
     vcmds  = RoundValidator(s).validate_all(parsed)
 
     vc = vcmds["1"][0]
-    # Should be valid with a warning (penalty, not invalid)
+    # Valid with no warning (resource point attack has no conflict penalty)
     assert vc.valid, (
-        f"attack on resource point in round 2 should be valid (with warning), "
+        f"attack on resource point in round 2 should be valid, "
         f"reason={vc.reason!r}"
     )
-    assert vc.warning, (
-        f"attack on resource point should have a warning, got warning={vc.warning!r}"
+    # No warning for resource point attack (only NEUTRAL_ISLAND triggers warning)
+    assert not vc.warning, (
+        f"attack on resource point should have no warning in new engine, got warning={vc.warning!r}"
     )
 
     new_s, log, _ = _execute_round(s, vcmds)
 
-    # Troops deducted from source but NOT at 迷霧島 (penalty: lost)
+    # Source loses 100 troops
     t1_at_hk = new_s.zones["人類王國"].troops.get("1", 0)
     assert t1_at_hk == 400, (
-        f"T1 should have 500-100=400 at source after penalty attack, got {t1_at_hk}"
+        f"T1 should have 500-100=400 at source, got {t1_at_hk}"
     )
-    # No troops from T1 at 迷霧島 (they were lost, not sent there)
+    # T1 wins the battle at 迷霧島 (solo, no defender) — troops arrive there
+    # (Phase 5 then adds +2000 for ≤4 teams at 迷霧島, so final is ≥ 100)
     t1_at_fog = new_s.zones["迷霧島"].troops.get("1", 0)
-    assert t1_at_fog == 0, (
-        f"T1's troops should be lost (not at 迷霧島) after penalty attack, got {t1_at_fog}"
+    assert t1_at_fog > 0, (
+        f"T1's troops should be present at 迷霧島 after attacking (no penalty), got {t1_at_fog}"
     )
-    # Penalty log must exist
-    penalty_logs = [l for l in log if "懲罰" in l and "1" in l]
-    assert penalty_logs, (
-        f"Penalty log should appear for resource point attack. log={log}"
+    # Attack log must exist (not penalty)
+    attack_logs = [l for l in log if "attack" in l.lower() or "戰鬥" in l and "迷霧" in l]
+    assert attack_logs, (
+        f"Attack/battle log should appear for resource point attack. log={log}"
     )
 
 
@@ -449,12 +468,10 @@ def test_attack_resource_point_round2_troops_lost():
 
 def test_zero_troop_forced_owner_multi_team_gets_half_x():
     """
-    T1 is forced_owner with 0 troops. T2 has 100 troops at same zone (龍族火山, x=1000).
-    Multi-team formula:
-      owner=T1 (0 troops), total_t=100, half_x=500
-      T1: floor(500 + 500 * 0/100) = 500
-      T2: floor(500 * 100/100)     = 500
-    Both get floor(X/2) = 500.
+    T1 is forced_owner with 0 troops. T2 has 100 troops at 龍族火山 (x=1000).
+    Phase 1.5 (300-min defense check): zone total = 100 < 300 → zone cleared to 0,
+    forced_owner also cleared. Neither team earns NP this round.
+    Both T1 and T2 get 0 NP (zone was cleared before Phase 3 NP distribution).
     """
     x = TERRITORY_POWER["龍族火山"]  # 1000
     s = GameState(teams=["1", "2"], max_rounds=3)
@@ -463,18 +480,21 @@ def test_zero_troop_forced_owner_multi_team_gets_half_x():
 
     new_s, log, _ = run_round(s, {})
 
-    half_x = x // 2  # 500
     np1 = new_s.national_power.get("1", 0)
     np2 = new_s.national_power.get("2", 0)
 
-    assert np1 == half_x, (
-        f"0-troop forced_owner T1 should get floor(X/2)={half_x} NP, got {np1}. "
-        f"log={[l for l in log if '龍族火山' in l]}"
+    # Phase 1.5 clears the zone (< 300 troops) before NP distribution → 0 NP for both
+    assert np1 == 0, (
+        f"T1 (forced_owner) should get 0 NP: zone cleared by Phase 1.5 (< 300 troops), got {np1}. "
+        f"log={[l for l in log if '龍族火山' in l or '防守' in l]}"
     )
-    assert np2 == half_x, (
-        f"T2 sole-presence non-owner should get floor(X/2)={half_x} NP, got {np2}. "
-        f"log={[l for l in log if '龍族火山' in l]}"
+    assert np2 == 0, (
+        f"T2 should get 0 NP: zone cleared by Phase 1.5 (< 300 troops), got {np2}. "
+        f"log={[l for l in log if '龍族火山' in l or '防守' in l]}"
     )
+    # Verify the clear log appears
+    clear_log = [l for l in log if "防守不足" in l and "龍族火山" in l]
+    assert clear_log, f"Phase 1.5 clear log should appear. log={log}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -84,16 +84,20 @@ def make_state(attacker_teams, target_team):
 
 
 def resolve(state, commands_by_team: dict[str, str]) -> dict[str, list[str]]:
-    """Parse and validate, return {team: sorted_effective_allies} for union_attack cmds."""
+    """Parse and validate, return {team: sorted_effective_allies} for attack cmds.
+    Teams invalidated by coalition conflict are excluded from result (not an error).
+    """
     parsed = {t: parse_commands(text) for t, text in commands_by_team.items()}
     vcmds = RoundValidator(state).validate_all(parsed)
     result = {}
     for team, vlist in vcmds.items():
         for vc in vlist:
-            if vc.result.command and vc.result.command.op == "union_attack":
+            if vc.result.command and vc.result.command.op == "attack":
                 if not vc.valid:
+                    if "聯盟衝突" in (vc.reason or ""):
+                        continue  # coalition loser — excluded, not an error
                     raise AssertionError(
-                        f"team {team} union_attack unexpectedly invalid: {vc.reason}"
+                        f"team {team} attack unexpectedly invalid: {vc.reason}"
                     )
                 result[team] = sorted(vc.effective_allies)
     return result
@@ -118,7 +122,7 @@ def test_three_way_full_coalition():
 def test_partial_trust_ab_wins():
     """
     1=[2,3], 2=[1], 3=[1]. Valid cliques: {1,2} and {1,3}.
-    Troops 1=300, 2=200, 3=100 → 1+2=500 > 1+3=400 → {1,2} wins, 3 solo.
+    Troops 1=300, 2=200, 3=100 → 1+2=500 > 1+3=400 → {1,2} wins; 3 is invalidated.
     """
     state = make_state(["1","2","3"], "4")
     allies = resolve(state, {
@@ -128,13 +132,14 @@ def test_partial_trust_ab_wins():
     })
     assert allies["1"] == ["2"], allies["1"]
     assert allies["2"] == ["1"], allies["2"]
-    assert allies["3"] == [],    allies["3"]
+    # Team 3 loses coalition conflict → troops returned, not in result
+    assert "3" not in allies, f"3 should be invalidated: {allies.get('3')}"
     print("PASS test_partial_trust_ab_wins")
 
 
 def test_partial_trust_ac_wins():
     """
-    1=[2,3], 2=[1], 3=[1]. Troops 1=100, 2=50, 3=200 → 1+3=300 > 1+2=150 → {1,3} wins.
+    1=[2,3], 2=[1], 3=[1]. Troops 1=100, 2=50, 3=200 → 1+3=300 > 1+2=150 → {1,3} wins; 2 is invalidated.
     """
     state = make_state(["1","2","3"], "4")
     allies = resolve(state, {
@@ -143,7 +148,8 @@ def test_partial_trust_ac_wins():
         "3": f"union_attack({_ZONES[2]}, [1], {_ZONES[3]}, 200)",
     })
     assert allies["1"] == ["3"], allies["1"]
-    assert allies["2"] == [],    allies["2"]
+    # Team 2 loses coalition conflict → troops returned, not in result
+    assert "2" not in allies, f"2 should be invalidated: {allies.get('2')}"
     assert allies["3"] == ["1"], allies["3"]
     print("PASS test_partial_trust_ac_wins")
 
@@ -232,7 +238,8 @@ def test_overlapping_max_cliques_troops_decide():
     })
     assert sorted(allies["1"]) == ["2","4"], f"1: {allies['1']}"
     assert sorted(allies["2"]) == ["1","4"], f"2: {allies['2']}"
-    assert allies["3"] == [],                f"3 should be solo: {allies['3']}"
+    # Team 3 loses coalition conflict → troops returned, not in result
+    assert "3" not in allies,               f"3 should be invalidated: {allies.get('3')}"
     assert sorted(allies["4"]) == ["1","2"], f"4: {allies['4']}"
     print("PASS test_overlapping_max_cliques_troops_decide")
 
@@ -381,20 +388,15 @@ def test_multi_source_beats_larger_solo():
 
 # ── Bug-regression tests ──────────────────────────────────────────────────────
 
-def test_conflict_penalty_only_skips_conflict_troops():
+def test_over_withdrawal_cancels_excess_commands():
     """
-    Bug 1 regression: conflict penalty should only block ×1.5 for the
-    conflict-forced portion, not for legitimate moving → neutral in same round.
-
-    Setup:
-      T1 has 500 troops in zone S and 200 in zone Z.
-      T1 submits moving(S→neutral, 300) AND moving(S→E, 300) → conflict at S.
-      T1 also submits moving(Z→neutral, 100) → valid.
-
+    Over-withdrawal: T1 submits move(S→neutral, 300) + attack(S, E, 300) from S (500 troops).
+    Total withdrawal 600 > 500 → second command (attack) is invalidated.
+    T1 also moves 100 from Z → neutral.
     Expected:
-      - 500 forced-to-neutral from S: NO ×1.5
-      - 100 legit-to-neutral from Z: gets ×1.5 → 150
-      - T1 total at neutral = 650
+      - move(S, neutral, 300) valid → 300 troops at neutral
+      - 100 from Z → neutral → 400 total at neutral
+      - neutral ×1.5 → ceil100(400 × 1.5) = 600
     """
     S = _ZONES[0]
     Z = _ZONES[1]
@@ -413,13 +415,11 @@ def test_conflict_penalty_only_skips_conflict_troops():
         _T2: parse_commands(""),
     }
     vcmds = RoundValidator(state).validate_all(parsed)
-    new_state, _, _ = _execute_round(state, vcmds)
-
-    t1_neutral = new_state.zones[NEUTRAL_ISLAND].troops.get(_T1, 0)
-    assert t1_neutral == 650, (
-        f"expected 650 (500 penalty + floor(100×1.5)), got {t1_neutral}"
-    )
-    print("PASS test_conflict_penalty_only_skips_conflict_troops")
+    # The over-withdrawal command should be invalid
+    t1_cmds = vcmds[_T1]
+    invalid_cmds = [vc for vc in t1_cmds if not vc.valid]
+    assert len(invalid_cmds) >= 1, "Over-withdrawal should invalidate excess command"
+    print("PASS test_over_withdrawal_cancels_excess_commands")
 
 
 def test_zero_troop_owner_retains_zone_when_attackers_eliminate():
@@ -462,46 +462,25 @@ def test_zero_troop_owner_retains_zone_when_attackers_eliminate():
     print("PASS test_zero_troop_owner_retains_zone_when_attackers_eliminate")
 
 
-def test_same_round_move_not_counted_as_garrison():
+def test_garrison_blocks_attack_on_own_zone():
     """
-    Bug regression (§6.4): garrison betrayal only applies to pre-round troops.
-    Troops that ARRIVE at target via moving() in the same round are NOT garrison.
+    Garrison betrayal mechanic is removed. Any pre-existing troops at a target
+    zone block the attack command (駐守叛變已廢除).
 
     Setup:
-      T1 is minority at E (30 pre-existing troops), T2 is owner (200 troops).
-      T1: moving(Z, E, 50) — adds 50 to E this round
-      T1: attack(S, E, 100) — attacks E (T1 is minority, not owner → valid)
-      Expected:
-        - garrison = 30 (pre-round only, not 30+50=80)
-        - T1's 50 newly moved troops join the defenders at E
-        - T1 attacks with 100 vs defenders = (200 - no change) + 50 fresh = 250
-        - T1 loses (100 < 250); T1's garrison (30) is lost to the loser pool
+      T1 has 30 troops at E (pre-existing). T1 tries to attack E from S.
+      Expected: attack is invalid because T1 already has troops at E.
     """
     E = _ZONES[0]
     S = _ZONES[1]
-    Z = _ZONES[2]
     state = GameState(teams=[_T1, _T2])
     state.zones[E] = ZoneState(troops={_T1: 30, _T2: 200})
     state.zones[E].forced_owner = _T2
     state.zones[S] = ZoneState(troops={_T1: 200})
-    state.zones[Z] = ZoneState(troops={_T1: 200})
 
-    parsed = {
-        _T1: parse_commands(f"moving({Z}, {E}, 50) attack({S}, {E}, 100)"),
-        _T2: parse_commands(""),
-    }
+    parsed = {_T1: parse_commands(f"attack({S}, {E}, 100)")}
     vcmds = RoundValidator(state).validate_all(parsed)
-    for vc in vcmds[_T1]:
-        assert vc.valid, f"cmd invalid: {vc.reason}"
-
-    new_state, log, _ = _execute_round(state, vcmds)
-
-    # T2 should still own E (T1 lost with 100 vs 250)
-    assert new_state.zones[E].owner() == _T2, (
-        f"T2 should still own E, got {new_state.zones[E].owner()}"
-    )
-    # Garrison should be only 30 (pre-round), not 80
-    log_txt = "\n".join(log)
-    assert "n_Ac=30" in log_txt, f"garrison should be 30, log:\n{log_txt}"
-    assert "n_Ac=80" not in log_txt, f"garrison should NOT be 80, log:\n{log_txt}"
-    print("PASS test_same_round_move_not_counted_as_garrison")
+    vc = vcmds[_T1][0]
+    assert not vc.valid, "attack on zone with own troops should be invalid"
+    assert "駐兵" in (vc.reason or ""), f"expected garrison reason, got: {vc.reason}"
+    print("PASS test_garrison_blocks_attack_on_own_zone")

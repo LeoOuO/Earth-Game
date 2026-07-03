@@ -70,10 +70,9 @@ def _validated_commands_dict():
                 "reason": vc.reason or vc.result.error,
                 "warning": vc.warning,
                 "op": cmd.op if cmd else None,
-                "union_status": vc.union_status,
-                "union_partner": vc.union_partner,
-                "union_role": vc.union_role,
-                "nation": cmd.nation if cmd and cmd.op == "union" else "",
+                "help_matched": vc.help_matched,
+                "help_partner": vc.help_partner,
+                "nation": cmd.nation if cmd else "",
                 "effective_allies": vc.effective_allies,
             }
             out[team].append(entry)
