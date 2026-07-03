@@ -25,7 +25,6 @@ const SPECIAL_ZONES = [
   {name:"中立小島", note:"中立，兵力×1.5/回合（向上取百位）", icon:"🏝", code:"NEU"},
   {name:"迷霧島",   note:"R1：≤4隊各得2000兵+1000椰（第2回合起）", icon:"🌫", code:"FOG"},
   {name:"金錢島",   note:"R2：3000椰子平分（第2回合起）", icon:"💰", code:"GOLD"},
-  {name:"漩渦",     note:"R3：奇數隊→3000兵；偶數隊→3000椰；6隊→無（第2回合起）", icon:"🌀", code:"VORT"},
 ];
 
 /* Island English codes */
@@ -33,7 +32,7 @@ const ISLAND_CODES = {
   "人類王國":"HK","精靈森域":"ELF","龍族火山":"DV","獸人荒原":"ORC",
   "巨人山丘":"GNT","侏儒劇場":"DWF","狐族賭館":"FOX","機械王國":"MK",
   "布丁狗族":"PUD","河童國":"KPA","哥布林族":"GOB","套娃族":"DOLL",
-  "中立小島":"NEU","迷霧島":"FOG","金錢島":"GOLD","漩渦":"VORT",
+  "中立小島":"NEU","迷霧島":"FOG","金錢島":"GOLD",
 };
 
 /* Island positions on real-mode sea map (% of container width/height) */
@@ -53,7 +52,6 @@ const ISLAND_POSITIONS = {
   "中立小島": {l:50, t:47},
   "迷霧島":   {l:32, t:57},
   "金錢島":   {l:64, t:28},
-  "漩渦":     {l:56, t:69},
 };
 
 /* ── State ────────────────────────────────────────────────────────────────── */
@@ -355,7 +353,7 @@ function renderRealMap() {
   const allZones = [
     ...ISLANDS,
     "中立小島",
-    "迷霧島", "金錢島", "漩渦",
+    "迷霧島", "金錢島",
   ];
 
   allZones.forEach(zone => {
@@ -366,7 +364,7 @@ function renderRealMap() {
     const ownerColor = owner ? (TEAM_COLORS[owner] || null) : null;
     const isContested = Object.keys(zdata.troops || {}).length > 1;
     const code = ISLAND_CODES[zone] || zone;
-    const isResource = ["迷霧島","金錢島","漩渦"].includes(zone);
+    const isResource = ["迷霧島","金錢島"].includes(zone);
     const isNeutral = zone === "中立小島";
     const locked = isResource && round < 2;
 
@@ -507,26 +505,27 @@ function makeCmdEntry(c, team) {
     statusIcon = '✗';
     reasonText = c.reason;
     reasonClass = 'error';
-  } else if (c.op === 'union') {
-    if (c.union_status === 'confirmed') {
+  } else if (c.op === 'help') {
+    if (c.help_matched) {
       entryClass += ' confirmed';
       statusIcon = '🤝';
-      reasonText = `聯盟成立（與隊 ${c.union_partner}，${c.union_role === 'requesting' ? '己方出兵' : '接受駐守'}）`;
+      reasonText = `協防成立（隊 ${c.help_partner} 接受）`;
       reasonClass = 'union-ok';
     } else {
       entryClass += ' pending';
       statusIcon = '⏳';
-      reasonText = `等待隊 ${c.nation || '?'} 確認（尚未提交對應 union）`;
+      reasonText = `等待隊 ${c.nation || '?'} 確認（尚未提交對應 accept）`;
       reasonClass = 'union-pending';
     }
-  } else if (c.op === 'union_attack') {
+  } else if (c.op === 'accept') {
     statusIcon = '✓';
-    if (c.effective_allies && c.effective_allies.length > 0) {
-      reasonText = `聯盟：隊 ${c.effective_allies.join('+')} 共同進攻`;
-      reasonClass = 'union-ok';
-    } else {
-      reasonText = '獨立進攻（無有效聯盟）';
-    }
+    reasonText = `接受協防（隊 ${c.help_partner || c.nation} 成立）`;
+    reasonClass = 'union-ok';
+    if (c.warning) { reasonText += `  ⚠ ${c.warning}`; reasonClass = 'cmd-warn'; }
+  } else if (c.op === 'attack' && c.effective_allies && c.effective_allies.length > 0) {
+    statusIcon = '✓';
+    reasonText = `聯盟進攻：與隊 ${c.effective_allies.join('+')}`;
+    reasonClass = 'union-ok';
     if (c.warning) { reasonText += `  ⚠ ${c.warning}`; reasonClass = 'cmd-warn'; }
   } else {
     statusIcon = '✓';
@@ -694,8 +693,8 @@ const BW = 17, BH = 20; // half-dimensions for center-offset positioning
 
 function _boatEmoji(kind) {
   if (kind === 'penalty') return '💣';
-  if (kind === 'attack' || kind === 'union_attack') return '⚔️';
-  if (kind === 'union') return '🛡';
+  if (kind === 'attack') return '⚔️';
+  if (kind === 'help') return '🛡';
   return '⛵';
 }
 
@@ -738,19 +737,19 @@ function _animateSolo(map, ev, callback) {
       boat.querySelector('.boat-n').textContent = '';
       boat.style.transition = 'opacity 0.5s';
       setTimeout(() => { boat.classList.add('fading'); setTimeout(() => { boat.remove(); callback(); }, 500); }, 400);
-    } else if (ev.kind === 'moving' || ev.kind === 'union') {
+    } else if (ev.kind === 'move' || ev.kind === 'help') {
       liveAdd(ev.to, ev.team, ev.n);
       boat.classList.add('fading');
       setTimeout(() => { boat.remove(); callback(); }, 350);
     } else {
-      // attack / union_attack: park at destination until the zone's battle plays
+      // attack: park at destination until the zone's battle plays
       (_parked[ev.to] = _parked[ev.to] || []).push(boat);
       callback();
     }
   }, 880);
 }
 
-/* union_attack group animation: rally → sum popup → charge */
+/* coalition attack animation: rally → sum popup → charge */
 async function _animateGroup(map, boats) {
   if (boats.length === 1) {
     return new Promise(r => _animateSolo(map, boats[0], r));
@@ -832,7 +831,7 @@ async function playAnimations(events) {
   const moves   = events.filter(e => e.type === 'move');
   const battles = events.filter(e => e.type === 'battle');
 
-  // Separate union_attack coalitions (≥2 boats) from solo moves
+  // Separate coalition attacks (≥2 boats) from solo moves
   const groups = {};
   const solo   = [];
   for (const ev of moves) {
@@ -927,7 +926,7 @@ function showExecModal(log) {
     if (line.startsWith('[戰鬥]')) cls = 'log-battle';
     else if (line.startsWith('[椰子]')) cls = 'log-power';
     else if (line.startsWith('[中立]') || line.startsWith('[救濟]')) cls = 'log-neutral';
-    else if (line.startsWith('[迷霧') || line.startsWith('[金錢') || line.startsWith('[漩渦')) cls = 'log-resource';
+    else if (line.startsWith('[迷霧') || line.startsWith('[金錢')) cls = 'log-resource';
     else if (line.startsWith('[衝突') || line.startsWith('[懲罰')) cls = 'log-penalty';
     else if (line.startsWith('[管理員]')) cls = 'log-admin';
     div.className = cls;

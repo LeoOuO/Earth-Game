@@ -129,14 +129,15 @@
         </div>
         <div id="cmd-templates">
           <span class="tpl-label">模板：</span>
-          <button class="tpl-btn" onclick="insertTemplate('moving(S, E, n)')">moving</button>
+          <button class="tpl-btn" onclick="insertTemplate('move(S, E, n)')">move</button>
           <button class="tpl-btn" onclick="insertTemplate('attack(S, E, n)')">attack</button>
-          <button class="tpl-btn" onclick="insertTemplate('union(S, P, E, n)')">union</button>
-          <button class="tpl-btn" onclick="insertTemplate('union_attack(S, [P], E, n)')">union_attack</button>
+          <button class="tpl-btn" onclick="insertTemplate('attack(S, E, n, [P])')">attack+盟友</button>
+          <button class="tpl-btn" onclick="insertTemplate('help(S, E, n, P)')">help</button>
+          <button class="tpl-btn" onclick="insertTemplate('accept(E, P)')">accept</button>
           <button class="tpl-btn tpl-admin" onclick="insertTemplate('set(zone, K, T:n)')">set</button>
         </div>
         <textarea id="cmd-textarea"
-                  placeholder="貼上指令（英文代號，可多行）&#10;&#10;例：&#10;moving(HK, ELF, 500)&#10;attack(ELF, DV, 300)&#10;union(HK, 2, ELF, 200)&#10;union_attack(HK, [2,3], DV, 400)"
+                  placeholder="貼上指令（英文代號，可多行）&#10;&#10;例：&#10;move(HK, ELF, 500)&#10;attack(ELF, DV, 300)&#10;attack(HK, DV, 300, [2,3])&#10;help(HK, ELF, 200, 2)&#10;accept(ELF, 1)"
         ></textarea>
         <div class="cmd-btn-row">
           <button class="btn btn-primary" onclick="submitCommands()">發送</button>
